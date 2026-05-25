@@ -70,6 +70,7 @@ test "FilteredWalker iterates all files" {
     try helpers.createFilesFromList(io, tmp.dir, &[_][]const u8{
         "foo",
         "bar/foo",
+        "bar/xer/file.txt",
     });
 
     var walker = try FilteredWalker.init(
@@ -95,6 +96,55 @@ test "FilteredWalker iterates all files" {
     // TODO order independence
     try helpers.expectEqualStringSlices(&[_][]const u8{
         "bar/foo",
+        "bar/xer/file.txt",
         "foo",
+    }, actual.items);
+}
+
+fn testPredicate(entry: Dir.Walker.Entry) bool {
+    if (entry.kind == .directory) {
+        return std.mem.startsWith(u8, entry.basename, "bar") or
+            std.mem.startsWith(u8, entry.basename, "xer");
+    }
+
+    return std.mem.endsWith(u8, entry.basename, "file.txt");
+}
+
+test "FilteredWalker respects include function" {
+    const helpers = @import("test_helpers.zig");
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try helpers.createFilesFromList(io, tmp.dir, &[_][]const u8{
+        "foo",
+        "bar/foo",
+        "bar/xer/file.txt",
+        "xer/vid.mp4",
+    });
+
+    var walker = try FilteredWalker.init(
+        testing.allocator,
+        tmp.dir,
+        &testPredicate,
+    );
+    defer walker.deinit();
+
+    var actual = std.ArrayList([]const u8).empty;
+    defer {
+        for (actual.items) |e| {
+            testing.allocator.free(e);
+        }
+        actual.deinit(testing.allocator);
+    }
+
+    while (try walker.next(io)) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.path);
+        try actual.append(testing.allocator, pathCopy);
+    }
+
+    try helpers.expectEqualStringSlices(&[_][]const u8{
+        "bar/xer/file.txt",
     }, actual.items);
 }
