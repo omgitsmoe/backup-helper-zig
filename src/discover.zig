@@ -7,15 +7,14 @@ pub const PredicateFn = *const fn (entry: Dir.Walker.Entry) bool;
 
 /// NOTE: the memory `relativePath` that the PredicateFn receives will only
 ///       remain valid for the duration of the PredicateFn call.
+/// NOTE: skips symlinks to directories
 pub const FilteredWalker = struct {
     predicateFn: ?PredicateFn,
     walker: Dir.SelectiveWalker,
     root: Dir,
     arena: std.heap.ArenaAllocator,
 
-    pub const Error = error{
-        RootMustBeAbsolute,
-    } || Dir.OpenError || std.mem.Allocator.Error;
+    pub const Error = Dir.OpenError || Dir.StatFileError || std.mem.Allocator.Error;
     const Self = @This();
 
     /// NOTE: `root` must have been opened with `OpenOptions.iterate` set to true
@@ -40,7 +39,17 @@ pub const FilteredWalker = struct {
 
     pub fn next(self: *Self, io: std.Io) Error!?Dir.Walker.Entry {
         while (try self.walker.next(io)) |entry| {
-            // TODO resolve symlinks for files
+            if (entry.kind == .sym_link) {
+                const stat = try entry.dir.statFile(io, entry.basename, .{
+                    .follow_symlinks = true,
+                });
+
+                if (stat.kind == .directory) {
+                    // skip symlinks to directories
+                    continue;
+                }
+            }
+
             const include = if (self.predicateFn) |predicateFn|
                 predicateFn(entry)
             else
@@ -147,4 +156,70 @@ test "FilteredWalker respects include function" {
     try helpers.expectEqualStringSlices(&[_][]const u8{
         "bar/xer/file.txt",
     }, actual.items);
+}
+
+test "FilteredWalker skips symlinks to directories" {
+    const helpers = @import("test_helpers.zig");
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try helpers.createFilesFromList(io, tmp.dir, &[_][]const u8{
+        "regular-file",
+        "regular-dir/file",
+    });
+    try tmp.dir.symLink(testing.io, "regular-dir/file", "link-file", .{});
+    try tmp.dir.symLink(
+        testing.io,
+        "regular-dir",
+        "link-dir",
+        .{ .is_directory = true },
+    );
+
+    var walker = try FilteredWalker.init(
+        testing.allocator,
+        tmp.dir,
+        null,
+    );
+    defer walker.deinit();
+
+    var actual = std.ArrayList([]const u8).empty;
+    defer {
+        for (actual.items) |e| {
+            testing.allocator.free(e);
+        }
+        actual.deinit(testing.allocator);
+    }
+
+    while (try walker.next(io)) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.path);
+        try actual.append(testing.allocator, pathCopy);
+    }
+
+    // TODO order independence
+    try helpers.expectEqualStringSlices(&[_][]const u8{
+        "link-file",
+        "regular-dir/file",
+        "regular-file",
+    }, actual.items);
+}
+
+test "FilteredWalker error on symlink not found" {
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.symLink(testing.io, "target/does/not/exist", "link-file", .{});
+
+    var walker = try FilteredWalker.init(
+        testing.allocator,
+        tmp.dir,
+        null,
+    );
+    defer walker.deinit();
+
+    const got = walker.next(io);
+    try testing.expectEqual(Dir.StatFileError.FileNotFound, got);
 }
