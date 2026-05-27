@@ -11,8 +11,6 @@ pub const PredicateFn = *const fn (entry: Dir.Walker.Entry) bool;
 pub const FilteredWalker = struct {
     predicateFn: ?PredicateFn,
     walker: Dir.SelectiveWalker,
-    root: Dir,
-    arena: std.heap.ArenaAllocator,
 
     pub const Error = Dir.OpenError || Dir.StatFileError || std.mem.Allocator.Error;
     const Self = @This();
@@ -23,13 +21,10 @@ pub const FilteredWalker = struct {
         root: Dir,
         predicate: ?PredicateFn,
     ) Error!FilteredWalker {
-        const arena = std.heap.ArenaAllocator.init(allocator);
         const walker = try Dir.walkSelectively(root, allocator);
         return .{
             .predicateFn = predicate,
             .walker = walker,
-            .root = root,
-            .arena = arena,
         };
     }
 
@@ -40,13 +35,35 @@ pub const FilteredWalker = struct {
     pub fn next(self: *Self, io: std.Io) Error!?Dir.Walker.Entry {
         while (try self.walker.next(io)) |entry| {
             if (entry.kind == .sym_link) {
-                const stat = try entry.dir.statFile(io, entry.basename, .{
+                const stat = entry.dir.statFile(io, entry.basename, .{
                     .follow_symlinks = true,
                 });
 
-                if (stat.kind == .directory) {
-                    // skip symlinks to directories
-                    continue;
+                if (stat) |value| {
+                    if (value.kind == .directory) {
+                        // skip symlinks to directories
+                        continue;
+                    }
+                } else |err| {
+                    // TODO better handling
+                    if (err == .FileNotFound) {
+                        std.debug.print(
+                            "WARN skipped faulty symlink at {s}\n",
+                            .{entry.path},
+                        );
+
+                        continue;
+                    }
+                    if (err == .SymLinkLoop) {
+                        std.debug.print(
+                            "WARN skipped symlink loop at {s}\n",
+                            .{entry.path},
+                        );
+
+                        continue;
+                    }
+
+                    return err;
                 }
             }
 
@@ -169,9 +186,9 @@ test "FilteredWalker skips symlinks to directories" {
         "regular-file",
         "regular-dir/file",
     });
-    try tmp.dir.symLink(testing.io, "regular-dir/file", "link-file", .{});
+    try tmp.dir.symLink(io, "regular-dir/file", "link-file", .{});
     try tmp.dir.symLink(
-        testing.io,
+        io,
         "regular-dir",
         "link-dir",
         .{ .is_directory = true },
@@ -211,7 +228,7 @@ test "FilteredWalker error on symlink not found" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.symLink(testing.io, "target/does/not/exist", "link-file", .{});
+    try tmp.dir.symLink(io, "target/does/not/exist", "link-file", .{});
 
     var walker = try FilteredWalker.init(
         testing.allocator,
