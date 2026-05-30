@@ -4,10 +4,16 @@ const FilteredWalker = @import("discover.zig").FilteredWalker;
 
 pub const StoreStr = struct {
     paths: std.ArrayList([]const u8) = .empty,
+    total_path_len: usize = 0,
 
     pub fn store(self: *@This(), allocator: std.mem.Allocator, path: []const u8) !void {
         const dupe = try allocator.dupe(u8, path);
         try self.paths.append(allocator, dupe);
+        self.total_path_len += path.len;
+    }
+
+    pub fn memoryUsed(self: *const @This()) usize {
+        return self.total_path_len + self.paths.capacity * @sizeOf([]const u8);
     }
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -152,6 +158,17 @@ pub const StoreTree = struct {
     pub fn iter(self: *@This(), allocator: std.mem.Allocator) !StoreTreeIter {
         return StoreTreeIter.init(allocator, self.root);
     }
+
+    pub fn memoryUsed(self: *const @This()) usize {
+        var total: usize = 0;
+        var it = self.arena.state.used_list;
+        while (it) |node| : (it = node.next) {
+            var int = node.size;
+            int.resizing = false;
+            total += @as(usize, @bitCast(int)) - @sizeOf(@TypeOf(node));
+        }
+        return total;
+    }
 };
 
 pub const StoreTreeIter = struct {
@@ -227,6 +244,10 @@ pub const StorePacked = struct {
             .offsets = self.offsets.items,
             .index = 0,
         };
+    }
+
+    pub fn memoryUsed(self: *const @This()) usize {
+        return self.buffer.capacity + self.offsets.capacity * @sizeOf(usize);
     }
 };
 

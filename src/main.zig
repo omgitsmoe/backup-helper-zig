@@ -8,105 +8,66 @@ const err = error{
 };
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    // std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // // This is appropriate for anything that lives as long as the process.
-    // const arena: std.mem.Allocator = init.arena.allocator();
-
-    // // Accessing command line arguments:
-    // const args = try init.minimal.args.toSlice(arena);
-    // for (args) |arg| {
-    //     std.log.info("arg: {s}", .{arg});
-    // }
-
-    // // In order to do I/O operations need an `Io` instance.
-    // const io = init.io;
-
-    // // Stdout is for the actual output of your application, for example if you
-    // // are implementing gzip, then only the compressed bytes should be sent to
-    // // stdout, not any debugging messages.
-    // var stdout_buffer: [1024]u8 = undefined;
-    // var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    // const stdout_writer = &stdout_file_writer.interface;
-
-    // try backup_helper_zig.printAnotherMessage(stdout_writer);
-
-    // try stdout_writer.flush(); // Don't forget to flush!
-
     const gpa = init.gpa;
     const io = init.io;
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len < 2) {
+    if (args.len < 3) {
         return err.NotEnoughArguments;
     }
     const root = args[1];
-    std.debug.print("visiting {s}\n", .{root});
+    const method = args[2];
+    std.debug.print("using {s}\n", .{root});
     // try testStoreStr(io, gpa, root);
     // try testStoreTree(io, gpa, root);
 
-    const file = try std.Io.Dir.cwd().openFile(io, "paths_real", .{});
+    const file = try std.Io.Dir.cwd().openFile(io, root, .{});
     var buf: [65536]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    try testStoreStrStreaming(gpa, &reader.interface);
-    // try testStoreTreeStreaming(gpa, &reader.interface);
-    // try testStorePackedStreaming(gpa, &reader.interface);
+    if (std.mem.eql(u8, method, "str")) {
+        try testStoreStrStreaming(gpa, &reader.interface);
+    } else if (std.mem.eql(u8, method, "tree")) {
+        try testStoreTreeStreaming(gpa, &reader.interface);
+    } else if (std.mem.eql(u8, method, "packed")) {
+        try testStorePackedStreaming(gpa, &reader.interface);
+    } else {
+        return error.UnknownMethod;
+    }
 }
 
 fn debugInclude(entry: Io.Dir.Walker.Entry) bool {
     std.debug.print("visiting {s}\n", .{entry.path});
 }
 
-// real paths
+// using paths_real
 // Stored 1157340 paths
-// Using bytes 161102022 = 157326 KB = 153 MB
-// 6.48user 0.23system 0:06.64elapsed 101%CPU (0avgtext+0avgdata 230016maxresident)k
-// 0inputs+53275outputs (0major+85973minor)pagefaults 0swaps
-// 230016 ~= 224mb
-// random paths
+// Using bytes 92939296 = 90761 KB = 88 MB
+// 6.09user 0.10system 0:06.21elapsed 99%CPU (0avgtext+0avgdata 228588maxresident)k
+// 0inputs+0outputs (0major+64506minor)pagefaults 0swaps
+// using paths_1m
 // Stored 1000000 paths
-// Using bytes 6315029160 = 6167020 KB = 6022 MB
-// 11.11user 2.02system 0:13.08elapsed 100%CPU (0avgtext+0avgdata 7255304maxresident)k
-// 0inputs+53275outputs (0major+1842157minor)pagefaults 0swaps
-// 7255304 ~= 7 000mb
+// Using bytes 5064227308 = 4945534 KB = 4829 MB
+// 11.17user 2.30system 0:13.56elapsed 99%CPU (0avgtext+0avgdata 7254780maxresident)k
+// 0inputs+60462outputs (21major+1843887minor)pagefaults 0swaps
 fn testStoreStrStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const alloc = arena.allocator();
     var store = backup_helper_zig.store.StoreStr{};
-    defer store.deinit(alloc);
+    defer store.deinit(allocator);
 
     while (try reader.takeDelimiter('\n')) |path| {
-        try store.store(alloc, path);
+        try store.store(allocator, path);
     }
 
     // for (store.paths.items) |path| {
     //     std.debug.print("{s}\n", .{path});
     // }
     std.debug.print("Stored {} paths\n", .{store.paths.items.len});
-    const bytesUsed = countListCapacity(arena);
+    const bytesUsed = store.memoryUsed();
     std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
         bytesUsed,
         bytesUsed / 1024,
         bytesUsed / 1024 / 1024,
     });
-}
-
-fn countListCapacity(arena: std.heap.ArenaAllocator) usize {
-    var capacity: usize = 0;
-    var it = arena.state.used_list;
-    while (it) |node| : (it = node.next) {
-        // Compute the actually allocated size excluding the
-        // linked list node.
-        var int = node.size;
-        int.resizing = false;
-        const nodeSize: usize = @bitCast(int);
-        capacity += nodeSize - @sizeOf(@TypeOf(node));
-    }
-    return capacity;
 }
 
 // visiting /mnt/wdata/coding
@@ -146,23 +107,18 @@ fn testStoreStr(io: Io, allocator: std.mem.Allocator, root: []const u8) !void {
     std.debug.print("Stored {} paths\n", .{store.paths.items.len});
 }
 
-// real paths
+// using paths_real
 // Stored 1079134 paths
-// Using bytes 162105502 = 158306 KB = 154 MB
-// 20.76user 0.18system 0:20.91elapsed 100%CPU (0avgtext+0avgdata 142296maxresident)k
-// 0inputs+60194outputs (0major+35815minor)pagefaults 0swaps
-// 142296 ~= 139mb
-// random paths
+// Using bytes 112431402 = 109796 KB = 107 MB
+// 20.40user 0.03system 0:20.48elapsed 99%CPU (0avgtext+0avgdata 112748maxresident)k
+// 0inputs+0outputs (0major+13741minor)pagefaults 0swaps
+// using paths_1m
 // Stored 1000000 paths
-// Using bytes 2112946332 = 2063424 KB = 2015 MB
-// 62.89user 0.51system 1:03.45elapsed 99%CPU (0avgtext+0avgdata 575412maxresident)k
-// 0inputs+60194outputs (0major+38590minor)pagefaults 0swaps
-// 575412 ~= 562mb
+// Using bytes 850236092 = 830308 KB = 810 MB
+// 62.79user 0.90system 1:03.74elapsed 99%CPU (0avgtext+0avgdata 576888maxresident)k
+// 0inputs+60462outputs (0major+63740minor)pagefaults 0swaps
 fn testStoreTreeStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var store = try backup_helper_zig.store.StoreTree.init(alloc, "/");
+    var store = try backup_helper_zig.store.StoreTree.init(allocator, "/");
     defer store.deinit();
 
     while (try reader.takeDelimiter('\n')) |path| {
@@ -185,7 +141,7 @@ fn testStoreTreeStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !voi
         // std.debug.print("{s}\n", .{path});
     }
     std.debug.print("Stored {} paths\n", .{paths_num});
-    const bytesUsed = countListCapacity(arena);
+    const bytesUsed = store.memoryUsed();
     std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
         bytesUsed,
         bytesUsed / 1024,
@@ -193,20 +149,22 @@ fn testStoreTreeStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !voi
     });
 }
 
-// real paths
+// using paths_real
 // Stored 1157340 paths
-// Using bytes 712822768 = 696115 KB = 679 MB
-// 0.31user 0.05system 0:00.38elapsed 98%CPU (0avgtext+0avgdata 299964maxresident)k
-// 0inputs+0outputs (0major+57521minor)pagefaults 0swaps
+// Using bytes 101594165 = 99213 KB = 96 MB
+// 0.30user 0.02system 0:00.32elapsed 99%CPU (0avgtext+0avgdata 102976maxresident)k
+// 0inputs+0outputs (0major+16967minor)pagefaults 0swaps
+// using paths_1m
+// Stored 1000000 paths
+// Using bytes 5313175672 = 5188648 KB = 5067 MB
+// 5.93user 1.14system 0:07.01elapsed 100%CPU (0avgtext+0avgdata 5190520maxresident)k
+// 0inputs+60462outputs (0major+1138804minor)pagefaults 0swaps
 fn testStorePackedStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var store = backup_helper_zig.store.StorePacked.init(alloc);
-    defer store.deinit(alloc);
+    var store = backup_helper_zig.store.StorePacked.init(allocator);
+    defer store.deinit(allocator);
 
     while (try reader.takeDelimiter('\n')) |path| {
-        try store.store(alloc, path);
+        try store.store(allocator, path);
     }
 
     // var iter = store.iter();
@@ -215,7 +173,7 @@ fn testStorePackedStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !v
     // }
 
     std.debug.print("Stored {} paths\n", .{store.len()});
-    const bytesUsed = countListCapacity(arena);
+    const bytesUsed = store.memoryUsed();
     std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
         bytesUsed,
         bytesUsed / 1024,
