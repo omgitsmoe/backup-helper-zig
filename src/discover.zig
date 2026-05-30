@@ -7,7 +7,6 @@ pub const PredicateFn = *const fn (entry: Dir.Walker.Entry) bool;
 
 /// NOTE: the memory `relativePath` that the PredicateFn receives will only
 ///       remain valid for the duration of the PredicateFn call.
-/// NOTE: skips symlinks to directories
 pub const FilteredWalker = struct {
     predicateFn: ?PredicateFn,
     walker: Dir.SelectiveWalker,

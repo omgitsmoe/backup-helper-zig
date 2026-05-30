@@ -184,3 +184,66 @@ pub const StoreTreeIter = struct {
         self.stack.deinit(allocator);
     }
 };
+
+pub const StorePacked = struct {
+    buffer: std.ArrayList(u8),
+    offsets: std.ArrayList(usize),
+
+    pub fn init(allocator: std.mem.Allocator) StorePacked {
+        _ = allocator;
+        return .{
+            .buffer = .empty,
+            .offsets = .empty,
+        };
+    }
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.buffer.deinit(allocator);
+        self.offsets.deinit(allocator);
+    }
+
+    pub fn store(self: *@This(), allocator: std.mem.Allocator, path: []const u8) !void {
+        const offset = self.buffer.items.len;
+        try self.offsets.append(allocator, offset);
+        try self.buffer.appendSlice(allocator, path);
+    }
+
+    pub fn get(self: *@This(), index: usize) []const u8 {
+        const start = self.offsets.items[index];
+        const end = if (index + 1 < self.offsets.items.len)
+            self.offsets.items[index + 1]
+        else
+            self.buffer.items.len;
+        return self.buffer.items[start..end];
+    }
+
+    pub fn len(self: *@This()) usize {
+        return self.offsets.items.len;
+    }
+
+    pub fn iter(self: *@This()) StorePackedIter {
+        return .{
+            .buffer = self.buffer.items,
+            .offsets = self.offsets.items,
+            .index = 0,
+        };
+    }
+};
+
+pub const StorePackedIter = struct {
+    buffer: []const u8,
+    offsets: []const usize,
+    index: usize,
+
+    pub fn next(self: *@This()) ?[]const u8 {
+        const i = self.index;
+        if (i >= self.offsets.len) return null;
+        self.index = i + 1;
+        const start = self.offsets[i];
+        const end = if (i + 1 < self.offsets.len)
+            self.offsets[i + 1]
+        else
+            self.buffer.len;
+        return self.buffer[start..end];
+    }
+};

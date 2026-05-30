@@ -50,8 +50,9 @@ pub fn main(init: std.process.Init) !void {
     var buf: [65536]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    // try testStoreStrStreaming(gpa, &reader.interface);
-    try testStoreTreeStreaming(gpa, &reader.interface);
+    try testStoreStrStreaming(gpa, &reader.interface);
+    // try testStoreTreeStreaming(gpa, &reader.interface);
+    // try testStorePackedStreaming(gpa, &reader.interface);
 }
 
 fn debugInclude(entry: Io.Dir.Walker.Entry) bool {
@@ -60,25 +61,52 @@ fn debugInclude(entry: Io.Dir.Walker.Entry) bool {
 
 // real paths
 // Stored 1157340 paths
+// Using bytes 161102022 = 157326 KB = 153 MB
 // 6.48user 0.23system 0:06.64elapsed 101%CPU (0avgtext+0avgdata 230016maxresident)k
 // 0inputs+53275outputs (0major+85973minor)pagefaults 0swaps
 // 230016 ~= 224mb
 // random paths
 // Stored 1000000 paths
+// Using bytes 6315029160 = 6167020 KB = 6022 MB
 // 11.11user 2.02system 0:13.08elapsed 100%CPU (0avgtext+0avgdata 7255304maxresident)k
 // 0inputs+53275outputs (0major+1842157minor)pagefaults 0swaps
 // 7255304 ~= 7 000mb
 fn testStoreStrStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
     var store = backup_helper_zig.store.StoreStr{};
-    defer store.deinit(allocator);
+    defer store.deinit(alloc);
+
     while (try reader.takeDelimiter('\n')) |path| {
-        try store.store(allocator, path);
+        try store.store(alloc, path);
     }
 
     // for (store.paths.items) |path| {
     //     std.debug.print("{s}\n", .{path});
     // }
     std.debug.print("Stored {} paths\n", .{store.paths.items.len});
+    const bytesUsed = countListCapacity(arena);
+    std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
+        bytesUsed,
+        bytesUsed / 1024,
+        bytesUsed / 1024 / 1024,
+    });
+}
+
+fn countListCapacity(arena: std.heap.ArenaAllocator) usize {
+    var capacity: usize = 0;
+    var it = arena.state.used_list;
+    while (it) |node| : (it = node.next) {
+        // Compute the actually allocated size excluding the
+        // linked list node.
+        var int = node.size;
+        int.resizing = false;
+        const nodeSize: usize = @bitCast(int);
+        capacity += nodeSize - @sizeOf(@TypeOf(node));
+    }
+    return capacity;
 }
 
 // visiting /mnt/wdata/coding
@@ -120,22 +148,28 @@ fn testStoreStr(io: Io, allocator: std.mem.Allocator, root: []const u8) !void {
 
 // real paths
 // Stored 1079134 paths
+// Using bytes 162105502 = 158306 KB = 154 MB
 // 20.76user 0.18system 0:20.91elapsed 100%CPU (0avgtext+0avgdata 142296maxresident)k
 // 0inputs+60194outputs (0major+35815minor)pagefaults 0swaps
 // 142296 ~= 139mb
 // random paths
 // Stored 1000000 paths
+// Using bytes 2112946332 = 2063424 KB = 2015 MB
 // 62.89user 0.51system 1:03.45elapsed 99%CPU (0avgtext+0avgdata 575412maxresident)k
 // 0inputs+60194outputs (0major+38590minor)pagefaults 0swaps
 // 575412 ~= 562mb
 fn testStoreTreeStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
-    var store = try backup_helper_zig.store.StoreTree.init(allocator, "/");
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var store = try backup_helper_zig.store.StoreTree.init(alloc, "/");
     defer store.deinit();
 
     while (try reader.takeDelimiter('\n')) |path| {
         _ = try store.add(path);
     }
 
+    // not storing iteration allocs inside arena, shouldn't count to storage size
     var iter = try store.iter(allocator);
     defer iter.deinit(allocator);
     var paths_num: usize = 0;
@@ -151,6 +185,42 @@ fn testStoreTreeStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !voi
         // std.debug.print("{s}\n", .{path});
     }
     std.debug.print("Stored {} paths\n", .{paths_num});
+    const bytesUsed = countListCapacity(arena);
+    std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
+        bytesUsed,
+        bytesUsed / 1024,
+        bytesUsed / 1024 / 1024,
+    });
+}
+
+// real paths
+// Stored 1157340 paths
+// Using bytes 712822768 = 696115 KB = 679 MB
+// 0.31user 0.05system 0:00.38elapsed 98%CPU (0avgtext+0avgdata 299964maxresident)k
+// 0inputs+0outputs (0major+57521minor)pagefaults 0swaps
+fn testStorePackedStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var store = backup_helper_zig.store.StorePacked.init(alloc);
+    defer store.deinit(alloc);
+
+    while (try reader.takeDelimiter('\n')) |path| {
+        try store.store(alloc, path);
+    }
+
+    // var iter = store.iter();
+    // while (iter.next()) |path| {
+    //     std.debug.print("{s}\n", .{path});
+    // }
+
+    std.debug.print("Stored {} paths\n", .{store.len()});
+    const bytesUsed = countListCapacity(arena);
+    std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
+        bytesUsed,
+        bytesUsed / 1024,
+        bytesUsed / 1024 / 1024,
+    });
 }
 
 // visiting /mnt/wdata/coding
