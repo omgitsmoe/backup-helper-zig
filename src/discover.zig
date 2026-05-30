@@ -34,38 +34,27 @@ pub const FilteredWalker = struct {
 
     pub fn next(self: *Self, io: std.Io) Error!?Dir.Walker.Entry {
         while (try self.walker.next(io)) |entry| {
-            if (entry.kind == .sym_link) {
-                const stat = entry.dir.statFile(io, entry.basename, .{
-                    .follow_symlinks = true,
-                });
-
-                if (stat) |value| {
-                    if (value.kind == .directory) {
-                        // skip symlinks to directories
-                        continue;
-                    }
-                } else |err| {
-                    // TODO better handling
-                    if (err == .FileNotFound) {
-                        std.debug.print(
-                            "WARN skipped faulty symlink at {s}\n",
-                            .{entry.path},
-                        );
-
-                        continue;
-                    }
-                    if (err == .SymLinkLoop) {
-                        std.debug.print(
-                            "WARN skipped symlink loop at {s}\n",
-                            .{entry.path},
-                        );
-
-                        continue;
-                    }
-
-                    return err;
-                }
-            }
+            // TODO better handling for symlinks and other special files:
+            //      we will only visit regular files, but notify
+            //      about skipped files!
+            //
+            //      options:
+            //      - skip non-regular files
+            //        - scorch: skips non-regular files
+            //        - `find ./foo/ -type f -print0 | xargs -0 sha1sum`
+            //          also skips non-regular files
+            //      - follow the symlink for files, record error for faulty links
+            //        - is confusing, since we don't follow links to directories
+            //          and doing that would be a completely different rabbit hole
+            //        - also most tools don't follow symlinks when copying by
+            //          default, e.g. rsync BUT cp does follow BUT only
+            //          in file, not directory-mode :/
+            //      - hash the contents of a symlink
+            //        - would lead to confusing results for links that point
+            //          to the same path, but different contents depending
+            //          on the environment
+            //      - record the symlink itself as a special entry
+            //        - same drawback as hashing the link contents
 
             const include = if (self.predicateFn) |predicateFn|
                 predicateFn(entry)
