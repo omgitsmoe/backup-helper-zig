@@ -163,7 +163,7 @@ test "FilteredWalker respects include function" {
     }, actual.items);
 }
 
-test "FilteredWalker skips symlinks to directories" {
+test "FilteredWalker visits all symlinks, but does not follow them" {
     const helpers = @import("test_helpers.zig");
     const io = testing.io;
 
@@ -204,13 +204,14 @@ test "FilteredWalker skips symlinks to directories" {
 
     // TODO order independence
     try helpers.expectEqualStringSlices(&[_][]const u8{
+        "link-dir",
         "link-file",
         "regular-dir/file",
         "regular-file",
     }, actual.items);
 }
 
-test "FilteredWalker error on symlink not found" {
+test "FilteredWalker handles invalid symlinks" {
     const io = testing.io;
 
     var tmp = testing.tmpDir(.{ .iterate = true });
@@ -225,6 +226,5 @@ test "FilteredWalker error on symlink not found" {
     );
     defer walker.deinit();
 
-    const got = walker.next(io);
-    try testing.expectEqual(Dir.StatFileError.FileNotFound, got);
+    while (try walker.next(io)) |_| {}
 }
