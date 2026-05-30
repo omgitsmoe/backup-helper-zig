@@ -31,6 +31,8 @@ pub fn main(init: std.process.Init) !void {
         try testStoreTreeStreaming(gpa, &reader.interface);
     } else if (std.mem.eql(u8, method, "packed")) {
         try testStorePackedStreaming(gpa, &reader.interface);
+    } else if (std.mem.eql(u8, method, "chunked")) {
+        try testStorePackedChunkedStreaming(gpa, &reader.interface);
     } else {
         return error.UnknownMethod;
     }
@@ -55,7 +57,7 @@ fn testStoreStrStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void
     defer store.deinit(allocator);
 
     while (try reader.takeDelimiter('\n')) |path| {
-        try store.store(allocator, path);
+        _ = try store.store(allocator, path);
     }
 
     // for (store.paths.items) |path| {
@@ -98,7 +100,7 @@ fn testStoreStr(io: Io, allocator: std.mem.Allocator, root: []const u8) !void {
         });
         defer allocator.free(absPath);
 
-        try store.store(allocator, absPath);
+        _ = try store.store(allocator, absPath);
     }
 
     // for (store.paths.items) |path| {
@@ -164,7 +166,39 @@ fn testStorePackedStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !v
     defer store.deinit(allocator);
 
     while (try reader.takeDelimiter('\n')) |path| {
-        try store.store(allocator, path);
+        _ = try store.store(allocator, path);
+    }
+
+    // var iter = store.iter();
+    // while (iter.next()) |path| {
+    //     std.debug.print("{s}\n", .{path});
+    // }
+
+    std.debug.print("Stored {} paths\n", .{store.len()});
+    const bytesUsed = store.memoryUsed();
+    std.debug.print("Using bytes {} = {} KB = {} MB\n", .{
+        bytesUsed,
+        bytesUsed / 1024,
+        bytesUsed / 1024 / 1024,
+    });
+}
+
+// using paths_real
+// Stored 1157340 paths
+// Using bytes 78280184 = 76445 KB = 74 MB
+// 0.30user 0.02system 0:00.33elapsed 100%CPU (0avgtext+0avgdata 80340maxresident)k
+// 0inputs+0outputs (0major+28014minor)pagefaults 0swaps
+// using paths_1m
+// Stored 1000000 paths
+// Using bytes 5277201400 = 5153516 KB = 5032 MB
+// 6.44user 1.47system 0:07.86elapsed 100%CPU (0avgtext+0avgdata 5166580maxresident)k
+// 0inputs+60632outputs (0major+1322771minor)pagefaults 0swaps
+fn testStorePackedChunkedStreaming(allocator: std.mem.Allocator, reader: *Io.Reader) !void {
+    var store = backup_helper_zig.store.StorePackedChunked.init(allocator, 65536);
+    defer store.deinit(allocator);
+
+    while (try reader.takeDelimiter('\n')) |path| {
+        _ = try store.store(allocator, path);
     }
 
     // var iter = store.iter();
