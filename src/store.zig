@@ -4,6 +4,7 @@ const FilteredWalker = @import("discover.zig").FilteredWalker;
 
 pub const PathStore = struct {
     chunk_size: usize,
+    // TODO use [chunk_size]u8 instead and make chunk_size comptime?
     chunks: std.ArrayList([]u8),
     // Position inside the current chunk
     pos: usize,
