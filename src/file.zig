@@ -7,6 +7,7 @@ const path = std.fs.path;
 const hash = @import("hash.zig");
 
 pub const File = struct {
+    // owned by PathStore
     path: []const u8,
     mtime: ?Io.Timestamp,
     size: ?u64,

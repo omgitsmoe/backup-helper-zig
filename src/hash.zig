@@ -11,12 +11,16 @@ pub const HashType = enum {
     sha3_256,
     sha3_512,
 
+    pub const Error = error{
+        UnknownHashType,
+    };
+
     pub fn str(self: @This()) []const u8 {
         return @tagName(self);
     }
 
     pub fn from(name: []const u8) !@This() {
-        return std.meta.stringToEnum(@This(), name) orelse error.UnknownHashType;
+        return std.meta.stringToEnum(@This(), name) orelse Error.UnknownHashType;
     }
 
     pub fn toHasher(self: @This()) type {

@@ -25,4 +25,6 @@ test "all" {
     _ = @import("file.zig");
     _ = @import("hash.zig");
     _ = @import("store.zig");
+    _ = @import("collection.zig");
+    _ = @import("parser.zig");
 }

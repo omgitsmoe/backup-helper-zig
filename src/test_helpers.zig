@@ -3,6 +3,7 @@ const std = @import("std");
 const Dir = std.Io.Dir;
 const path = std.fs.path;
 const testing = std.testing;
+const Collection = @import("collection.zig").Collection;
 
 pub fn createFilesFromList(io: std.Io, root: Dir, fileList: []const []const u8) !void {
     for (fileList) |relativePath| {
@@ -81,5 +82,23 @@ pub fn expectEqualStringSlices(
             );
             return error.TestExpectedEqual;
         }
+    }
+}
+
+pub fn exepectEqualCollection(
+    expected: Collection,
+    actual: Collection,
+) !void {
+    try testing.expectEqualStrings(expected.root_path, actual.root_path);
+    try testing.expectEqualStrings(expected.name, actual.name);
+    try testing.expectEqual(expected.mtime, actual.mtime);
+
+    try testing.expectEqual(expected.path_to_file.count(), actual.path_to_file.count());
+    var iter = expected.iterator();
+    while (iter.next()) |expected_entry| {
+        std.log.debug("looking up expected key: {s}\n", .{expected_entry.key_ptr.*});
+        const actual_entry = actual.path_to_file.get(expected_entry.key_ptr.*) orelse
+            @panic("expected key not found");
+        try testing.expectEqualDeep(expected_entry.value_ptr.*, actual_entry);
     }
 }

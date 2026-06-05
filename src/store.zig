@@ -15,42 +15,43 @@ pub const PathStore = struct {
     // Includes empty gap bytes, but does not include free trailing
     // bytes in the current chunk.
     total_data_len: usize,
+    allocator: std.mem.Allocator,
 
     pub const Error = error{ PathLargerThanChunkSize, OutOfMemory };
 
     pub fn init(allocator: std.mem.Allocator, chunk_size: usize) PathStore {
-        _ = allocator;
         return .{
             .chunk_size = chunk_size,
             .chunks = .empty,
             .pos = 0,
             .offsets = .empty,
             .total_data_len = 0,
+            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *@This()) void {
         for (self.chunks.items) |chunk| {
-            allocator.free(chunk);
+            self.allocator.free(chunk);
         }
-        self.chunks.deinit(allocator);
-        self.offsets.deinit(allocator);
+        self.chunks.deinit(self.allocator);
+        self.offsets.deinit(self.allocator);
     }
 
-    pub fn store(self: *@This(), allocator: std.mem.Allocator, path: []const u8) Error![]const u8 {
+    pub fn store(self: *@This(), path: []const u8) Error![]const u8 {
         if (path.len > self.chunk_size) {
             return Error.PathLargerThanChunkSize;
         }
 
         if (self.chunks.items.len == 0 or self.pos + path.len > self.chunk_size) {
-            const new_chunk = try allocator.alloc(u8, self.chunk_size);
-            try self.chunks.append(allocator, new_chunk);
+            const new_chunk = try self.allocator.alloc(u8, self.chunk_size);
+            try self.chunks.append(self.allocator, new_chunk);
             self.pos = 0;
         }
 
         const chunk_idx = self.chunks.items.len - 1;
         const global_offset = chunk_idx * self.chunk_size + self.pos;
-        try self.offsets.append(allocator, global_offset);
+        try self.offsets.append(self.allocator, global_offset);
 
         const slice = self.chunks.items[chunk_idx][self.pos..][0..path.len];
         @memcpy(slice, path);
@@ -101,9 +102,8 @@ pub const PathStoreIter = struct {
 test "PathStore first alloc fit in chunk size" {
     const expected = "0123456789";
     var store = PathStore.init(testing.allocator, 10);
-    defer store.deinit(testing.allocator);
+    defer store.deinit();
     const actual = try store.store(
-        testing.allocator,
         expected,
     );
 
@@ -117,9 +117,8 @@ test "PathStore first alloc fit in chunk size" {
 test "PathStore erorrs when path is larger than chunk size" {
     const expected = "0123456789+";
     var store = PathStore.init(testing.allocator, 10);
-    defer store.deinit(testing.allocator);
+    defer store.deinit();
     const actual = store.store(
-        testing.allocator,
         expected,
     );
 
@@ -130,13 +129,11 @@ test "PathStore current chunk fits two allocs" {
     const expectedFirst = "0123456789";
     const expectedSecond = "abc";
     var store = PathStore.init(testing.allocator, 13);
-    defer store.deinit(testing.allocator);
+    defer store.deinit();
     const actualFirst = try store.store(
-        testing.allocator,
         expectedFirst,
     );
     const actualSecond = try store.store(
-        testing.allocator,
         expectedSecond,
     );
 
@@ -154,13 +151,11 @@ test "PathStore current chunk too small" {
     const expectedFirst = "0123456789";
     const expectedSecond = "abc";
     var store = PathStore.init(testing.allocator, 12);
-    defer store.deinit(testing.allocator);
+    defer store.deinit();
     const actualFirst = try store.store(
-        testing.allocator,
         expectedFirst,
     );
     const actualSecond = try store.store(
-        testing.allocator,
         expectedSecond,
     );
 
