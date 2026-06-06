@@ -195,7 +195,7 @@ fn parseHash(allocator: std.mem.Allocator, line: *[]const u8) Error![]const u8 {
     return buf;
 }
 
-test "full version 1" {
+test "version 1: full" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
@@ -260,4 +260,153 @@ test "full version 1" {
     var actual = try parse(testing.allocator, &store, &reader, path_collection);
     defer actual.result.deinit();
     try helpers.exepectEqualCollection(expected, actual.result);
+}
+
+test "version 1: optional fields missing" {
+    const helpers = @import("test_helpers.zig");
+
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
+    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs = buf[0..abs_end_idx];
+    const input =
+        \\# version 1
+        \\,,md5,deadbeef foo/bar/file.txt
+        \\
+    ;
+
+    var expected_path_to_file = std.StringHashMap(File).init(testing.allocator);
+    defer expected_path_to_file.deinit();
+
+    const path = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "foo",
+        "bar",
+        "file.txt",
+    });
+    defer testing.allocator.free(path);
+    const collection_root = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+    });
+    defer testing.allocator.free(collection_root);
+
+    try expected_path_to_file.put(path, File{
+        .path = path,
+        .mtime = null,
+        .size = null,
+        .hash_type = .md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+    const expected = Collection{
+        .mtime = null,
+        .root_path = collection_root,
+        .name = "baz.cshd",
+        .path_to_file = expected_path_to_file,
+        .arena = undefined,
+    };
+
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    var reader = Io.Reader.fixed(input);
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    defer actual.result.deinit();
+    try helpers.exepectEqualCollection(expected, actual.result);
+}
+
+test "version 1: missing required hash type" {
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
+    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs = buf[0..abs_end_idx];
+    const input =
+        \\# version 1
+        \\,,,deadbeef foo/bar/file.txt
+        \\
+    ;
+
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    var reader = Io.Reader.fixed(input);
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    const err = parse(testing.allocator, &store, &reader, path_collection);
+    try testing.expectError(Error.MissingHashType, err);
+}
+
+test "version 1: missing required hash bytes" {
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
+    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs = buf[0..abs_end_idx];
+    const input =
+        \\# version 1
+        \\,,md5, foo/bar/file.txt
+        \\
+    ;
+
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    var reader = Io.Reader.fixed(input);
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    const err = parse(testing.allocator, &store, &reader, path_collection);
+    try testing.expectError(Error.MissingHash, err);
+}
+
+test "version 1: missing required path" {
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
+    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs = buf[0..abs_end_idx];
+    const input =
+        \\# version 1
+        \\,,md5,deadbeef 
+        \\
+    ;
+
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    var reader = Io.Reader.fixed(input);
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    const err = parse(testing.allocator, &store, &reader, path_collection);
+    try testing.expectError(Error.MissingPath, err);
 }
