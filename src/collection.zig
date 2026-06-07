@@ -26,9 +26,14 @@ pub const Collection = struct {
             return Error.PathNotAbsolute;
         }
 
-        const name = std_path.basename(path);
+        const normalized = try std_path.resolve(allocator, &[_][]const u8{
+            path,
+        });
+        defer allocator.free(normalized);
+
+        const name = std_path.basename(normalized);
         // if path is absolute, then dirname will always succeed
-        const dirpath = std_path.dirname(path) orelse unreachable;
+        const dirpath = std_path.dirname(normalized) orelse unreachable;
         var arena = try allocator.create(std.heap.ArenaAllocator);
         arena.* = .init(allocator);
         const alloc = arena.allocator();
@@ -155,4 +160,18 @@ test "Collection.putNoClobber" {
 
     const err = collection.putNoClobber(expected);
     try testing.expectError(Collection.Error.WouldClobber, err);
+}
+
+test "Collection normalizes path" {
+    const builtin = @import("builtin");
+    const path = if (builtin.target.os.tag == .windows)
+        "C:\\foo/bar/..\\./file.cshd"
+    else
+        "/foo/bar/../././file.cshd";
+
+    var collection = try Collection.init(testing.allocator, path);
+    defer collection.deinit();
+
+    const expected = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
+    try testing.expectEqualStrings(collection.root_path, expected);
 }

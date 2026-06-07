@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const builtin = @import("builtin");
 const FilteredWalker = @import("discover.zig").FilteredWalker;
 
 pub const PathStore = struct {
@@ -38,12 +39,22 @@ pub const PathStore = struct {
         self.offsets.deinit(self.allocator);
     }
 
-    pub fn store(self: *@This(), path: []const u8) Error![]const u8 {
-        if (path.len > self.chunk_size) {
+    pub fn store(self: *@This(), normalized_path: []const u8) Error![]const u8 {
+        if (normalized_path.len > self.chunk_size) {
             return Error.PathLargerThanChunkSize;
         }
 
-        if (self.chunks.items.len == 0 or self.pos + path.len > self.chunk_size) {
+        // assume normalized paths: important for use as hash keys in other
+        // parts of the lib
+        if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+            const normalized = try std.fs.path.resolve(self.allocator, &[_][]const u8{
+                normalized_path,
+            });
+            defer self.allocator.free(normalized);
+            std.debug.assert(std.mem.eql(u8, normalized, normalized_path));
+        }
+
+        if (self.chunks.items.len == 0 or self.pos + normalized_path.len > self.chunk_size) {
             const new_chunk = try self.allocator.alloc(u8, self.chunk_size);
             try self.chunks.append(self.allocator, new_chunk);
             self.pos = 0;
@@ -53,11 +64,21 @@ pub const PathStore = struct {
         const global_offset = chunk_idx * self.chunk_size + self.pos;
         try self.offsets.append(self.allocator, global_offset);
 
-        const slice = self.chunks.items[chunk_idx][self.pos..][0..path.len];
-        @memcpy(slice, path);
-        self.pos += path.len;
+        const slice = self.chunks.items[chunk_idx][self.pos..][0..normalized_path.len];
+        @memcpy(slice, normalized_path);
+        self.pos += normalized_path.len;
         self.total_data_len = chunk_idx * self.chunk_size + self.pos;
         return slice;
+    }
+
+    pub fn storeNormalized(self: *@This(), path: []const u8) Error![]const u8 {
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var fixed_alloc = std.heap.FixedBufferAllocator.init(&buf);
+        const normalized_path =
+            try std.fs.path.resolve(fixed_alloc.allocator(), &[_][]const u8{
+                path,
+            });
+        return self.store(normalized_path);
     }
 
     pub fn len(self: *@This()) usize {
@@ -167,4 +188,24 @@ test "PathStore current chunk too small" {
     try testing.expectEqual(12, store.offsets.items[1]);
     try testing.expectEqual(3, store.pos);
     try testing.expectEqual(15, store.total_data_len);
+}
+
+test "PathStore storeNormalized" {
+    const input = if (builtin.target.os.tag == .windows)
+        "C:\\foo/bar/..\\./file.cshd"
+    else
+        "/foo/bar/../././file.cshd";
+
+    const expected = if (builtin.target.os.tag == .windows)
+        "C:\\foo\\file.cshd"
+    else
+        "/foo/file.cshd";
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    const actual = try store.storeNormalized(
+        input,
+    );
+
+    try testing.expectEqualStrings(expected, actual);
 }

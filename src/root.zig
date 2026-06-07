@@ -28,4 +28,5 @@ test "all" {
     _ = @import("collection.zig");
     _ = @import("parser.zig");
     _ = @import("parser_single.zig");
+    _ = @import("serializer.zig");
 }

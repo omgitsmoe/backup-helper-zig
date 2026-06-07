@@ -32,6 +32,18 @@ pub const HashType = enum {
             .sha3_512 => hash.sha3.Sha3_512,
         };
     }
+
+    pub fn maxTagNameLen() usize {
+        const T = @This();
+        var max_len: usize = 0;
+
+        inline for (std.meta.tags(T)) |tag| {
+            const name = @tagName(tag);
+            max_len = @max(max_len, name.len);
+        }
+
+        return max_len;
+    }
 };
 
 pub fn hashFile(io: Io, file: std.Io.File, comptime hash_type: HashType) ![hash_type.toHasher().digest_length]u8 {

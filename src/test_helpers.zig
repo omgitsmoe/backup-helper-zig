@@ -102,3 +102,27 @@ pub fn exepectEqualCollection(
         try testing.expectEqualDeep(expected_entry.value_ptr.*, actual_entry);
     }
 }
+
+pub fn dummyAbsolutePathFile() []const u8 {
+    if (builtin.os.tag == .windows) {
+        return comptime dummyAbsolutePathDir() ++ "\\file.txt";
+    }
+
+    return comptime dummyAbsolutePathDir() ++ "/file.txt";
+}
+
+pub fn dummyAbsolutePathDir() []const u8 {
+    if (builtin.os.tag == .windows) {
+        return comptime dummyAbsolutePathRoot() ++ "\\foo\\bar";
+    }
+
+    return comptime dummyAbsolutePathRoot() ++ "foo/bar";
+}
+
+pub fn dummyAbsolutePathRoot() []const u8 {
+    if (builtin.os.tag == .windows) {
+        return "C:";
+    }
+
+    return "/";
+}
