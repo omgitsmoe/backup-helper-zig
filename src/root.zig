@@ -27,4 +27,5 @@ test "all" {
     _ = @import("store.zig");
     _ = @import("collection.zig");
     _ = @import("parser.zig");
+    _ = @import("parser_single.zig");
 }

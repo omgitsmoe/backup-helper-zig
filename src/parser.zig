@@ -92,12 +92,17 @@ fn parseLine(
     if (current.len == 0) {
         return Error.MissingPath;
     }
-    // TODO @Perf could do this on the stack
-    const joined = try std.fs.path.join(allocator, &[_][]const u8{
-        path_prefix,
-        current,
-    });
-    defer allocator.free(joined);
+
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    var fixed_alloc = std.heap.FixedBufferAllocator.init(&buf);
+    const joined = try std.fs.path.join(
+        fixed_alloc.allocator(),
+        &[_][]const u8{
+            path_prefix,
+            current,
+        },
+    );
+
     const path = try store.store(joined);
 
     const file = File{
@@ -431,6 +436,51 @@ test "version 0: optional fields missing" {
         .hash_type = .md5,
         .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
     });
+    const expected = Collection{
+        .mtime = null,
+        .root_path = collection_root,
+        .name = "baz.cshd",
+        .path_to_file = expected_path_to_file,
+        .arena = undefined,
+    };
+
+    var store = PathStore.init(testing.allocator, 100);
+    defer store.deinit();
+
+    var reader = Io.Reader.fixed(input);
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    defer actual.result.deinit();
+    try helpers.exepectEqualCollection(expected, actual.result);
+}
+
+test "empty" {
+    const helpers = @import("test_helpers.zig");
+
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
+    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs = buf[0..abs_end_idx];
+    const input = "";
+
+    var expected_path_to_file = std.StringHashMap(File).init(testing.allocator);
+    defer expected_path_to_file.deinit();
+
+    const collection_root = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        abs,
+        "xer",
+        "baz",
+    });
+    defer testing.allocator.free(collection_root);
+
     const expected = Collection{
         .mtime = null,
         .root_path = collection_root,
