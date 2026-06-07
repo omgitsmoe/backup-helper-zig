@@ -41,6 +41,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const glob_dep = b.dependency("glob", .{ .target = target, .optimize = optimize });
+    mod.addImport("glob", glob_dep.module("glob"));
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -82,6 +85,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    // TODO when building globs from cli
+    // exe.root_module.addImport("glob", glob_dep.module("glob"));
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

@@ -20,13 +20,45 @@ test "basic add functionality" {
     try std.testing.expect(add(3, 7) == 10);
 }
 
-test "all" {
+// TODO:
+// - matcher
+// - ^ discover: files + hash files
+// - incremental
+// - build most current
+// - verify file/collection
+
+test "discover" {
     _ = @import("discover.zig");
+}
+
+test "file" {
     _ = @import("file.zig");
+}
+
+test "hash" {
     _ = @import("hash.zig");
+}
+
+test "store" {
     _ = @import("store.zig");
+}
+
+test "collection" {
     _ = @import("collection.zig");
+}
+
+test "parser" {
     _ = @import("parser.zig");
+}
+
+test "parser_single" {
     _ = @import("parser_single.zig");
+}
+
+test "serializer" {
     _ = @import("serializer.zig");
+}
+
+test "matcher" {
+    _ = @import("matcher.zig");
 }
