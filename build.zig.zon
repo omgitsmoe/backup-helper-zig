@@ -32,9 +32,9 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .glob = .{
-            .url = "https://github.com/xcaeser/glob.zig/archive/v0.1.0.tar.gz",
-            .hash = "glob-0.1.0-AymqdJQ4AABqoaLWCtZyfQh4_bEh7c8bhffcZNp7HWsL",
+        .zlob = .{
+            .url = "https://github.com/dmtrKovalenko/zlob/archive/refs/tags/v1.5.0.tar.gz",
+            .hash = "zlob-1.5.0-zzE2lW6gBgAj7mSFzSv6JxBTrsVycLjfIELv8vZCKyj7",
         },
     },
     .paths = .{
