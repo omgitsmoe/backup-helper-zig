@@ -10,23 +10,13 @@ pub const Serializer = struct {
     writer: *Io.Writer,
     collection: *const Collection,
     header_written: bool = false,
-    buf: [buf_size]u8 = undefined,
-
-    const mtime_max_bytes = 64;
-    const size_max_bytes = 20;
-    // 64-256 bytes output -> so max 512, most have 64 bytes output
-    const hash_hex_max_bytes = 512;
-    const buf_size =
-        mtime_max_bytes +
-        size_max_bytes +
-        HashType.maxTagNameLen() +
-        hash_hex_max_bytes +
-        Io.Dir.max_path_bytes;
+    path_buf: [Io.Dir.max_path_bytes]u8,
 
     pub fn init(writer: *Io.Writer, collection: *const Collection) @This() {
         return .{
             .writer = writer,
             .collection = collection,
+            .path_buf = undefined,
         };
     }
 
@@ -35,29 +25,24 @@ pub const Serializer = struct {
             try self.write_header();
         }
 
-        var mtime_buf: [mtime_max_bytes]u8 = undefined;
-        var size_buf: [mtime_max_bytes]u8 = undefined;
-        var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
         var iter = self.collection.iterator();
         while (iter.next()) |entry| {
             const file = entry.value_ptr;
             std.debug.assert(std.mem.eql(u8, entry.key_ptr.*, file.path));
 
-            const mtime = if (file.mtime) |value|
-                try std.fmt.bufPrint(&mtime_buf, "{}", .{timestampToF64(value)})
-            else
-                mtime_buf[0..0];
+            if (file.mtime) |value| {
+                try self.writer.print("{}", .{timestampToF64(value)});
+            }
+            try self.writer.writeByte(',');
 
-            const size = if (file.size) |value|
-                try std.fmt.bufPrint(&size_buf, "{}", .{value})
-            else
-                size_buf[0..0];
+            if (file.size) |value| {
+                try self.writer.print("{}", .{value});
+            }
+            try self.writer.writeByte(',');
 
-            const hash_type = file.hash_type.str();
-            // const hash_hex = std.fmt.bytesToHex(file.hash_bytes, .lower);
-            // const hash_hex = std.fmt.bytesToHex(file.hash_bytes, .lower);
+            try self.writer.print("{s},", .{file.hash_type.str()});
 
-            var fixed_alloc = std.heap.FixedBufferAllocator.init(&path_buf);
+            var fixed_alloc = std.heap.FixedBufferAllocator.init(&self.path_buf);
             const relative = try std.fs.path.relative(
                 fixed_alloc.allocator(),
                 "",
@@ -66,14 +51,10 @@ pub const Serializer = struct {
                 file.path,
             );
 
-            const line = try std.fmt.bufPrint(
-                &self.buf,
-                "{s},{s},{s},{x} {s}\n",
-                .{ mtime, size, hash_type, file.hash_bytes, relative },
-            );
-
-            try self.writer.writeAll(line);
+            try self.writer.print("{x} {s}\n", .{ file.hash_bytes, relative });
         }
+
+        try self.writer.flush();
     }
 
     fn write_header(self: *@This()) !void {
