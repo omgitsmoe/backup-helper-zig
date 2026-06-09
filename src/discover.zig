@@ -2,8 +2,9 @@ const std = @import("std");
 const Dir = std.Io.Dir;
 const path = std.fs.path;
 const testing = std.testing;
+const Matcher = @import("matcher.zig").Matcher;
 
-pub const PredicateFn = *const fn (entry: Dir.Walker.Entry) bool;
+pub const PredicateFn = *const fn (context: *anyopaque, entry: Dir.Walker.Entry) bool;
 
 /// NOTE: the memory `relativePath` that the PredicateFn receives will only
 ///       remain valid for the duration of the PredicateFn call.
@@ -13,6 +14,17 @@ pub const FilteredWalker = struct {
 
     pub const Error = Dir.OpenError || Dir.StatFileError || std.mem.Allocator.Error;
     const Self = @This();
+
+    pub const Status = enum {
+        ok,
+        ignored_predicate,
+        ignored_special_file,
+    };
+
+    pub const Entry = struct {
+        inner: Dir.Walker.Entry,
+        status: Status,
+    };
 
     /// NOTE: `root` must have been opened with `OpenOptions.iterate` set to true
     pub fn init(
@@ -31,10 +43,10 @@ pub const FilteredWalker = struct {
         self.walker.deinit();
     }
 
-    pub fn next(self: *Self, io: std.Io) Error!?Dir.Walker.Entry {
+    /// `userdata` is passed to the `Self.predicateFn`
+    pub fn next(self: *Self, io: std.Io, userdata: *anyopaque) Error!?Entry {
         while (try self.walker.next(io)) |entry| {
-            // TODO better handling for symlinks and other special files:
-            //      we will only visit regular files, but notify
+            // NOTE we will only visit regular files, but notify
             //      about skipped files!
             //
             //      options:
@@ -56,7 +68,7 @@ pub const FilteredWalker = struct {
             //        - same drawback as hashing the link contents
 
             const include = if (self.predicateFn) |predicateFn|
-                predicateFn(entry)
+                predicateFn(userdata, entry)
             else
                 true;
 
@@ -66,8 +78,58 @@ pub const FilteredWalker = struct {
                     continue;
                 }
 
-                return entry;
+                if (entry.kind == .file) {
+                    return .{ .inner = entry, .status = .ok };
+                }
+
+                return .{ .inner = entry, .status = .ignored_special_file };
+            } else {
+                return .{ .inner = entry, .status = .ignored_predicate };
             }
+        }
+
+        return null;
+    }
+};
+
+pub const MatcherWalker = struct {
+    inner: FilteredWalker,
+    matcher: *const Matcher,
+
+    /// NOTE: `root` must have been opened with `OpenOptions.iterate` set to true
+    pub fn init(
+        allocator: std.mem.Allocator,
+        root: Dir,
+        matcher: *const Matcher,
+    ) FilteredWalker.Error!MatcherWalker {
+        return .{
+            .inner = try .init(allocator, root, &MatcherWalker.pred),
+            .matcher = matcher,
+        };
+    }
+
+    fn pred(userdata: *anyopaque, entry: Dir.Walker.Entry) bool {
+        const self: *const MatcherWalker = @ptrCast(@alignCast(userdata));
+        return self.match(entry);
+    }
+
+    fn match(self: *const MatcherWalker, entry: Dir.Walker.Entry) bool {
+        if (entry.kind == .directory) {
+            if (self.matcher.isBlocked(entry.path)) {
+                return false;
+            }
+        }
+
+        return self.matcher.isMatch(entry.path);
+    }
+
+    pub fn deinit(self: *MatcherWalker) void {
+        self.inner.deinit();
+    }
+
+    pub fn next(self: *MatcherWalker, io: std.Io) FilteredWalker.Error!?FilteredWalker.Entry {
+        while (try self.inner.next(io, self)) |entry| {
+            return entry;
         }
 
         return null;
@@ -94,28 +156,32 @@ test "FilteredWalker iterates all files" {
     );
     defer walker.deinit();
 
-    var actual = std.ArrayList([]const u8).empty;
+    var actual = std.ArrayList(struct { FilteredWalker.Status, []const u8 }).empty;
     defer {
         for (actual.items) |e| {
-            testing.allocator.free(e);
+            testing.allocator.free(e.@"1");
         }
         actual.deinit(testing.allocator);
     }
 
-    while (try walker.next(io)) |entry| {
-        const pathCopy = try testing.allocator.dupe(u8, entry.path);
-        try actual.append(testing.allocator, pathCopy);
+    while (try walker.next(io, &.{})) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.inner.path);
+        try actual.append(testing.allocator, .{ entry.status, pathCopy });
     }
 
     // TODO order independence
-    try helpers.expectEqualStringSlices(&[_][]const u8{
-        "bar/foo",
-        "bar/xer/file.txt",
-        "foo",
-    }, actual.items);
+    try helpers.expectEqualSlicesDeep(
+        struct { FilteredWalker.Status, []const u8 },
+        &[_]struct { FilteredWalker.Status, []const u8 }{
+            .{ .ok, "bar/foo" },
+            .{ .ok, "bar/xer/file.txt" },
+            .{ .ok, "foo" },
+        },
+        actual.items,
+    );
 }
 
-fn testPredicate(entry: Dir.Walker.Entry) bool {
+fn testPredicate(_: *anyopaque, entry: Dir.Walker.Entry) bool {
     if (entry.kind == .directory) {
         return std.mem.startsWith(u8, entry.basename, "bar") or
             std.mem.startsWith(u8, entry.basename, "xer");
@@ -145,22 +211,30 @@ test "FilteredWalker respects include function" {
     );
     defer walker.deinit();
 
-    var actual = std.ArrayList([]const u8).empty;
+    var actual = std.ArrayList(struct { FilteredWalker.Status, []const u8 }).empty;
     defer {
         for (actual.items) |e| {
-            testing.allocator.free(e);
+            testing.allocator.free(e.@"1");
         }
         actual.deinit(testing.allocator);
     }
 
-    while (try walker.next(io)) |entry| {
-        const pathCopy = try testing.allocator.dupe(u8, entry.path);
-        try actual.append(testing.allocator, pathCopy);
+    while (try walker.next(io, &.{})) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.inner.path);
+        try actual.append(testing.allocator, .{ entry.status, pathCopy });
     }
 
-    try helpers.expectEqualStringSlices(&[_][]const u8{
-        "bar/xer/file.txt",
-    }, actual.items);
+    // TODO order independence
+    try helpers.expectEqualSlicesDeep(
+        struct { FilteredWalker.Status, []const u8 },
+        &[_]struct { FilteredWalker.Status, []const u8 }{
+            .{ .ignored_predicate, "bar/foo" },
+            .{ .ok, "bar/xer/file.txt" },
+            .{ .ignored_predicate, "foo" },
+            .{ .ignored_predicate, "xer/vid.mp4" },
+        },
+        actual.items,
+    );
 }
 
 test "FilteredWalker visits all symlinks, but does not follow them" {
@@ -189,26 +263,30 @@ test "FilteredWalker visits all symlinks, but does not follow them" {
     );
     defer walker.deinit();
 
-    var actual = std.ArrayList([]const u8).empty;
+    var actual = std.ArrayList(struct { FilteredWalker.Status, []const u8 }).empty;
     defer {
         for (actual.items) |e| {
-            testing.allocator.free(e);
+            testing.allocator.free(e.@"1");
         }
         actual.deinit(testing.allocator);
     }
 
-    while (try walker.next(io)) |entry| {
-        const pathCopy = try testing.allocator.dupe(u8, entry.path);
-        try actual.append(testing.allocator, pathCopy);
+    while (try walker.next(io, &.{})) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.inner.path);
+        try actual.append(testing.allocator, .{ entry.status, pathCopy });
     }
 
     // TODO order independence
-    try helpers.expectEqualStringSlices(&[_][]const u8{
-        "link-dir",
-        "link-file",
-        "regular-dir/file",
-        "regular-file",
-    }, actual.items);
+    try helpers.expectEqualSlicesDeep(
+        struct { FilteredWalker.Status, []const u8 },
+        &[_]struct { FilteredWalker.Status, []const u8 }{
+            .{ .ignored_special_file, "link-dir" },
+            .{ .ignored_special_file, "link-file" },
+            .{ .ok, "regular-dir/file" },
+            .{ .ok, "regular-file" },
+        },
+        actual.items,
+    );
 }
 
 test "FilteredWalker handles invalid symlinks" {
@@ -226,5 +304,59 @@ test "FilteredWalker handles invalid symlinks" {
     );
     defer walker.deinit();
 
-    while (try walker.next(io)) |_| {}
+    while (try walker.next(io, &.{})) |_| {}
+}
+
+test "MatcherWalker" {
+    const helpers = @import("test_helpers.zig");
+    const MatcherBuilder = @import("matcher.zig").MatcherBuilder;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try helpers.createFilesFromList(io, tmp.dir, &[_][]const u8{
+        "foo",
+        "bar/foo",
+        "bar/xer/file.txt",
+    });
+
+    var builder = MatcherBuilder.init(testing.allocator);
+    try builder.allow("**/*.txt");
+    try builder.allow("*/foo");
+    try builder.allow("bar/**");
+    try builder.block("bar/xer/**/*");
+    var matcher = try builder.build();
+    defer matcher.deinit(testing.allocator);
+
+    var walker = try MatcherWalker.init(
+        testing.allocator,
+        tmp.dir,
+        &matcher,
+    );
+    defer walker.deinit();
+
+    var actual = std.ArrayList(struct { FilteredWalker.Status, []const u8 }).empty;
+    defer {
+        for (actual.items) |e| {
+            testing.allocator.free(e.@"1");
+        }
+        actual.deinit(testing.allocator);
+    }
+
+    while (try walker.next(io)) |entry| {
+        const pathCopy = try testing.allocator.dupe(u8, entry.inner.path);
+        try actual.append(testing.allocator, .{ entry.status, pathCopy });
+    }
+
+    // TODO order independence
+    try helpers.expectEqualSlicesDeep(
+        struct { FilteredWalker.Status, []const u8 },
+        &[_]struct { FilteredWalker.Status, []const u8 }{
+            .{ .ok, "bar/foo" },
+            .{ .ignored_predicate, "bar/xer/file.txt" },
+            .{ .ignored_predicate, "foo" },
+        },
+        actual.items,
+    );
 }

@@ -9,7 +9,7 @@ pub const Matcher = struct {
     allow: []zlob.CompiledPattern,
     block: []zlob.CompiledPattern,
 
-    pub fn isBlocked(self: *@This(), value: []const u8) bool {
+    pub fn isBlocked(self: *const @This(), value: []const u8) bool {
         for (self.block) |block| {
             if (block.matches(value, ZlobFlags)) {
                 return true;
@@ -19,7 +19,7 @@ pub const Matcher = struct {
         return false;
     }
 
-    pub fn isMatch(self: *@This(), value: []const u8) bool {
+    pub fn isMatch(self: *const @This(), value: []const u8) bool {
         if (self.isBlocked(value)) {
             return false;
         }

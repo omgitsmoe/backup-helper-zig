@@ -85,6 +85,91 @@ pub fn expectEqualStringSlices(
     }
 }
 
+// compares slices and inner slices only based on their content,
+// not their addresses!
+pub fn expectEqualSlicesDeep(
+    comptime T: type,
+    expected: []const T,
+    actual: []const T,
+) !void {
+    const diff_index: usize = diff_index: {
+        const shortest = @min(expected.len, actual.len);
+        var i: usize = 0;
+        while (i < shortest) : (i += 1) {
+            if (!deepEql(expected[i], actual[i])) break :diff_index i;
+        }
+        break :diff_index if (expected.len == actual.len)
+            return
+        else
+            shortest;
+    };
+
+    if (!std.testing.backend_can_print) return error.TestExpectedEqual;
+
+    const stderr = std.debug.lockStderr(&.{});
+    defer std.debug.unlockStderr();
+    const w = &stderr.file_writer.interface;
+
+    try w.print("\nSlices differ at index {}\n\n", .{diff_index});
+
+    try w.print("expected: ", .{});
+    try printValue(w, expected[diff_index]);
+    try w.print("\nactual:   ", .{});
+    try printValue(w, actual[diff_index]);
+    try w.print("\n\n", .{});
+
+    return error.TestExpectedEqual;
+}
+
+fn isStringSlice(comptime T: type) bool {
+    if (@typeInfo(T) != .pointer) return false;
+
+    const ptr = @typeInfo(T).pointer;
+    return ptr.size == .slice and ptr.child == u8;
+}
+
+fn printValue(w: *std.Io.Writer, value: anytype) !void {
+    const T = @TypeOf(value);
+
+    if (comptime isStringSlice(T)) {
+        try w.print("{any}", .{value});
+        try w.print("\nas str: \"{s}\"", .{value});
+    } else {
+        try w.print("{any}", .{value});
+    }
+}
+
+// eql that doesn't compare slice.ptr, just the contents
+fn deepEql(a: anytype, b: @TypeOf(a)) bool {
+    const T = @TypeOf(a);
+
+    switch (@typeInfo(T)) {
+        .pointer => |ptr| {
+            // Only handle slices ([]T), not single pointers (*T)
+            if (ptr.size == .slice) {
+                const Child = ptr.child;
+                return std.mem.eql(Child, a, b);
+            }
+            return a == b;
+        },
+        .@"struct" => |s| {
+            inline for (s.fields) |field| {
+                if (!deepEql(@field(a, field.name), @field(b, field.name))) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        .array => {
+            for (a, b) |ai, bi| {
+                if (!deepEql(ai, bi)) return false;
+            }
+            return true;
+        },
+        else => return std.meta.eql(a, b),
+    }
+}
+
 pub fn exepectEqualCollection(
     expected: Collection,
     actual: Collection,
