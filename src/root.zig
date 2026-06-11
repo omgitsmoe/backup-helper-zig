@@ -11,6 +11,9 @@ pub const store = @import("store.zig");
 // - build most current
 // - verify file/collection
 
+// TODO: testing robustness path (ordering etc.)
+//       also windows compat of tests
+
 test "discover" {
     _ = @import("discover.zig");
 }

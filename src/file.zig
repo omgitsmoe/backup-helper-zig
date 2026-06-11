@@ -6,6 +6,33 @@ const path = std.fs.path;
 
 const hash = @import("hash.zig");
 
+pub const VerifyResult = enum {
+    /// The hashes matched.
+    ok,
+
+    /// Could not compare hashes, since the file on disk was not found
+    /// or there were permission errors. Inspect the `std::io::ErrorKind`
+    /// to find the concrete reason.
+    file_missing, // TODO io error kind?
+
+    /// The file on disk did not match the stored hash. There was no stored
+    /// modification time, so it is unknown whether the file is corrupted.
+    mismatch,
+
+    /// The size of the file on disk did not match. No hashes were computed!
+    mismatch_size,
+
+    /// The file on disk did not match the stored hash. Since the modification
+    /// time matches with the file on disk, we can assume that the file has
+    /// very likely been corrupted.
+    mismatch_corrupted,
+
+    /// The file on disk did not match the stored hash, but the modification
+    /// time of the file on disk is newer or older compared to the stored
+    /// modification time. The stored hash might be outdated.
+    mismatch_outdated_hash,
+};
+
 pub const File = struct {
     // owned by PathStore
     path: []const u8,

@@ -113,9 +113,17 @@ pub fn expectEqualSlicesDeep(
     try w.print("\nSlices differ at index {}\n\n", .{diff_index});
 
     try w.print("expected: ", .{});
-    try printValue(w, expected[diff_index]);
+    if (expected.len > 0) {
+        try printValue(w, expected[diff_index]);
+    } else {
+        try w.print("[]", .{});
+    }
     try w.print("\nactual:   ", .{});
-    try printValue(w, actual[diff_index]);
+    if (actual.len > 0) {
+        try printValue(w, actual[diff_index]);
+    } else {
+        try w.print("[]", .{});
+    }
     try w.print("\n\n", .{});
 
     return error.TestExpectedEqual;
@@ -134,6 +142,8 @@ fn printValue(w: *std.Io.Writer, value: anytype) !void {
     if (comptime isStringSlice(T)) {
         try w.print("{any}", .{value});
         try w.print("\nas str: \"{s}\"", .{value});
+    } else if (@hasDecl(T, "format")) {
+        try w.print("{f}", .{value});
     } else {
         try w.print("{any}", .{value});
     }
@@ -165,6 +175,24 @@ fn deepEql(a: anytype, b: @TypeOf(a)) bool {
                 if (!deepEql(ai, bi)) return false;
             }
             return true;
+        },
+        .@"union" => |info| {
+            if (info.layout == .@"packed") return a == b;
+
+            const Tag = info.tag_type orelse
+                @compileError("cannot compare untagged union " ++ @typeName(T));
+
+            const tag_a: Tag = a;
+            const tag_b: Tag = b;
+
+            if (tag_a != tag_b) return false;
+
+            return switch (a) {
+                inline else => |val, tag| {
+                    const b_val = @field(b, @tagName(tag));
+                    return deepEql(val, b_val);
+                },
+            };
         },
         else => return std.meta.eql(a, b),
     }
@@ -210,4 +238,31 @@ pub fn dummyAbsolutePathRoot() []const u8 {
     }
 
     return "/";
+}
+
+pub fn CallbackCapture(comptime T: type) type {
+    return struct {
+        arena: std.heap.ArenaAllocator,
+        captures: std.ArrayList(T),
+
+        pub fn init(allocator: std.mem.Allocator) @This() {
+            return .{
+                .arena = .init(allocator),
+                .captures = .empty,
+            };
+        }
+
+        pub fn cb(progress: T, context: *anyopaque) anyerror!void {
+            var self: *@This() = @ptrCast(@alignCast(context));
+
+            try self.captures.append(
+                self.arena.allocator(),
+                try progress.clone(self.arena.allocator()),
+            );
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.arena.deinit();
+        }
+    };
 }

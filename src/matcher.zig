@@ -5,7 +5,7 @@ const zlob = @import("zlob");
 
 const ZlobFlags = zlob.ZlobFlags.recommended();
 
-pub const Matcher = struct {
+pub const PathMatcher = struct {
     allow: []zlob.CompiledPattern,
     block: []zlob.CompiledPattern,
 
@@ -54,7 +54,7 @@ pub const Matcher = struct {
     }
 };
 
-pub const MatcherBuilder = struct {
+pub const PathMatcherBuilder = struct {
     allocator: std.mem.Allocator,
     allow_list: std.ArrayList(zlob.CompiledPattern) = .empty,
     block_list: std.ArrayList(zlob.CompiledPattern) = .empty,
@@ -69,8 +69,8 @@ pub const MatcherBuilder = struct {
     /// slices and their contents.
     /// `Matcher.deinit` has to be called with the same allocator
     /// to free its memory.
-    pub fn build(self: *@This()) !Matcher {
-        const matcher = Matcher{
+    pub fn build(self: *@This()) !PathMatcher {
+        const matcher = PathMatcher{
             .allow = try self.allow_list.toOwnedSlice(self.allocator),
             .block = try self.block_list.toOwnedSlice(self.allocator),
         };
@@ -99,8 +99,8 @@ pub const MatcherBuilder = struct {
     }
 };
 
-test Matcher {
-    var builder = MatcherBuilder.init(testing.allocator);
+test PathMatcher {
+    var builder = PathMatcherBuilder.init(testing.allocator);
     try builder.allow("foo/**/*.zig");
     try builder.allow("**/*.txt");
     try builder.block("bar/**/*");
@@ -122,7 +122,7 @@ test Matcher {
 }
 
 test "empty matcher matches everything" {
-    var builder = MatcherBuilder.init(testing.allocator);
+    var builder = PathMatcherBuilder.init(testing.allocator);
 
     var matcher = try builder.build();
     defer matcher.deinit(testing.allocator);
