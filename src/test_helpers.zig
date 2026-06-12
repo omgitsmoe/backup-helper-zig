@@ -4,6 +4,7 @@ const Dir = std.Io.Dir;
 const path = std.fs.path;
 const testing = std.testing;
 const Collection = @import("collection.zig").Collection;
+const prog = @import("progress.zig");
 
 pub fn createFilesFromList(io: std.Io, root: Dir, fileList: []const []const u8) !void {
     for (fileList) |relativePath| {
@@ -257,7 +258,7 @@ pub fn CallbackCapture(comptime T: type) type {
             };
         }
 
-        pub fn cb(progress: T, context: *anyopaque) anyerror!void {
+        pub fn cb(progress: T, context: *anyopaque) prog.CallbackError!void {
             var self: *Self = @ptrCast(@alignCast(context));
 
             try self.captures.append(

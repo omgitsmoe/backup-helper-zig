@@ -1,25 +1,33 @@
 const std = @import("std");
 const VerifyResult = @import("file.zig").VerifyResult;
 
+// we need to constrain the errors callbacks can report,
+// otherwise, we lose the ability to annotate a specific error set
+// on functions
+pub const CallbackError = error{
+    CallbackFailed,
+    OutOfMemory,
+};
+
 pub const MostCurrentProgressFn = *const fn (
     progress: MostCurrentProgress,
     context: *anyopaque,
-) anyerror!void;
+) CallbackError!void;
 
 pub const IncrementalProgressFn = *const fn (
     progress: IncrementalProgress,
     context: *anyopaque,
-) anyerror!void;
+) CallbackError!void;
 
 pub const VerifyProgressFn = *const fn (
     progress: VerifyProgress,
     context: *anyopaque,
-) anyerror!void;
+) CallbackError!void;
 
 pub const HashProgressFn = *const fn (
     progress: HashProgress,
     context: *anyopaque,
-) anyerror!void;
+) CallbackError!void;
 
 pub const MostCurrentProgress = union(enum) {
     /// Found a hash file that will be included in the most current hash file.
@@ -30,7 +38,7 @@ pub const MostCurrentProgress = union(enum) {
     /// Load and merge hash file into most current.
     merge_hash_file: []const u8,
 
-    pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
         return switch (self) {
             .found_file => |v| .{
                 .found_file = try allocator.dupe(u8, v),
@@ -95,7 +103,7 @@ pub const IncrementalProgress = union(enum) {
     file_removed: []const u8,
     finished,
 
-    pub fn clone(self: @This(), allocator: std.mem.Allocator) anyerror!@This() {
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
         return switch (self) {
             .build_most_current => |v| .{
                 .build_most_current = try v.clone(allocator),

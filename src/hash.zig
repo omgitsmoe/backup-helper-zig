@@ -52,7 +52,7 @@ pub fn hashFile(
     io: Io,
     file: std.Io.File,
     comptime hash_type: HashType,
-    progress: ?*const fn (bytes_read: u64, context: *anyopaque) anyerror!void,
+    progress: ?*const fn (bytes_read: u64, context: *anyopaque) prog.CallbackError!void,
     context: *anyopaque,
 ) ![hash_type.toHasher().digest_length]u8 {
     const hasher_type = hash_type.toHasher();

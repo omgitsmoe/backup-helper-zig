@@ -42,7 +42,15 @@ pub const File = struct {
     hash_type: hash.HashType,
     hash_bytes: []const u8,
 
-    pub fn metadata_from_disk(self: *@This(), io: Io) !void {
+    // epsilon where a mtime timestamp will still be considered to
+    // compare "equal"
+    const mtime_timestamp_epsilon_ms: u64 = 1;
+
+    const Error = error{
+        MissingHash,
+    } || prog.CallbackError || Io.File.OpenError || Io.File.StatError;
+
+    pub fn metadata_from_disk(self: *@This(), io: Io) Error!void {
         const file = try Io.Dir.openFileAbsolute(
             io,
             self.path,
@@ -61,7 +69,7 @@ pub const File = struct {
         context: *anyopaque,
     };
 
-    fn hashFileCb(bytes_read: u64, context: *anyopaque) anyerror!void {
+    fn hashFileCb(bytes_read: u64, context: *anyopaque) prog.CallbackError!void {
         const cb_context: *hashFileCbContext = @ptrCast(@alignCast(context));
 
         if (cb_context.progress) |progress_fn| {
@@ -72,13 +80,13 @@ pub const File = struct {
         }
     }
 
-    pub fn hash_from_disk(
+    pub fn update_hash_from_disk(
         self: *@This(),
         io: Io,
         allocator: std.mem.Allocator,
         progress: ?prog.HashProgressFn,
         context: *anyopaque,
-    ) !void {
+    ) Error!void {
         const file = try Io.Dir.openFileAbsolute(
             io,
             self.path,
@@ -86,6 +94,24 @@ pub const File = struct {
         );
         defer file.close(io);
 
+        const hash_bytes = try self.hash_from_disk(
+            io,
+            allocator,
+            file,
+            progress,
+            context,
+        );
+        self.hash_bytes = hash_bytes;
+    }
+
+    pub fn hash_from_disk(
+        self: *@This(),
+        io: Io,
+        allocator: std.mem.Allocator,
+        file: Io.File,
+        progress: ?prog.HashProgressFn,
+        context: *anyopaque,
+    ) Error![]u8 {
         const stat = try file.stat(io);
         var cb_context = hashFileCbContext{
             .bytes_total = stat.size,
@@ -98,8 +124,7 @@ pub const File = struct {
                 const ht = @field(hash.HashType, f.name);
 
                 const hash_bytes = try hash.hashFile(io, file, ht, &hashFileCb, &cb_context);
-                self.hash_bytes = try allocator.dupe(u8, &hash_bytes);
-                return;
+                return try allocator.dupe(u8, &hash_bytes);
             }
         }
 
@@ -112,8 +137,65 @@ pub const File = struct {
         }
     }
 
-    // pub fn verify(self: *@This(), progress: ?prog.HashProgressFn) VerifyResult {
-    // }
+    pub fn verify(
+        self: *@This(),
+        io: Io,
+        allocator: std.mem.Allocator,
+        progress: ?prog.HashProgressFn,
+        context: *anyopaque,
+    ) Error!VerifyResult {
+        if (self.hash_bytes.len == 0) {
+            return Error.MissingHash;
+        }
+
+        const file = Io.Dir.openFileAbsolute(
+            io,
+            self.path,
+            .{ .allow_directory = false },
+        ) catch {
+            // TODO include actual error?
+            return .file_missing;
+        };
+        defer file.close(io);
+
+        const stat = try file.stat(io);
+        if (self.size) |recorded_size| {
+            const on_disk_size = stat.size;
+
+            if (recorded_size != on_disk_size) {
+                return .mismatch_size;
+            }
+        }
+
+        var error_on_mismatch: VerifyResult = .mismatch;
+        if (self.mtime) |recorded_mtime| {
+            const on_disk_mtime = stat.mtime;
+
+            const diff_ms = @abs(
+                recorded_mtime.durationTo(on_disk_mtime).toMilliseconds(),
+            );
+            if (diff_ms <= File.mtime_timestamp_epsilon_ms) {
+                error_on_mismatch = .mismatch_corrupted;
+            } else {
+                error_on_mismatch = .mismatch_outdated_hash;
+            }
+        }
+
+        const on_disk = try self.hash_from_disk(
+            io,
+            allocator,
+            file,
+            progress,
+            context,
+        );
+        defer allocator.free(on_disk);
+
+        if (std.mem.eql(u8, self.hash_bytes, on_disk)) {
+            return .ok;
+        }
+
+        return error_on_mismatch;
+    }
 };
 
 test "metadata_from_disk" {
@@ -229,7 +311,7 @@ test "hash_from_disk" {
         };
         defer file.deinit(testing.allocator);
 
-        try file.hash_from_disk(
+        try file.update_hash_from_disk(
             testing.io,
             testing.allocator,
             &CaptureType.cb,
@@ -260,7 +342,7 @@ test "hash_from_disk" {
         };
         defer file.deinit(testing.allocator);
 
-        try file.hash_from_disk(
+        try file.update_hash_from_disk(
             testing.io,
             testing.allocator,
             &CaptureType.cb,
@@ -275,5 +357,185 @@ test "hash_from_disk" {
             },
             capture.captures.items,
         );
+    }
+}
+
+test "verify" {
+    const helpers = @import("test_helpers.zig");
+
+    const tests = &[_]struct {
+        expected: VerifyResult,
+        expected_error: ?File.Error,
+        relative_path: []const u8,
+        on_disk: helpers.TestFile,
+        mtime: ?Io.Timestamp,
+        size: ?u64,
+        hash_type: hash.HashType,
+        hash_bytes: []const u8,
+    }{
+        .{
+            .expected = .ok,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+                .content = "hello world!",
+            },
+            .mtime = null,
+            .size = null,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xfc, 0x3f, 0xf9, 0x8e, 0x8c, 0x6a, 0x0d, 0x30, 0x87, 0xd5,
+                0x15, 0xc0, 0x47, 0x3f, 0x86, 0x77,
+            },
+        },
+        .{
+            .expected = .ok,
+            .expected_error = File.Error.MissingHash,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = null,
+                .content = "hello world!",
+            },
+            .mtime = null,
+            .size = null,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{},
+        },
+        .{
+            .expected = .file_missing,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "other/path/123",
+                .mtime = null,
+                .content = "hello world!",
+            },
+            .mtime = null,
+            .size = null,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xde, 0xad, 0xbe, 0xef,
+            },
+        },
+        .{
+            .expected = .mismatch,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+                .content = "hello world!",
+            },
+            .mtime = null,
+            .size = null,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xde, 0xad, 0xbe, 0xef,
+            },
+        },
+        .{
+            .expected = .mismatch_size,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+                .content = "hello world!",
+            },
+            .mtime = null,
+            .size = 200,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xde, 0xad, 0xbe, 0xef,
+            },
+        },
+        .{
+            .expected = .mismatch_corrupted,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+                .content = "hello world!",
+            },
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .size = 12,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xde, 0xad, 0xbe, 0xef,
+            },
+        },
+        .{
+            .expected = .mismatch_outdated_hash,
+            .expected_error = null,
+            .relative_path = "foo/bar/file.txt",
+            .on_disk = .{
+                .relativePath = "foo/bar/file.txt",
+                .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+                .content = "hello world!",
+            },
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(50)),
+            .size = 12,
+            .hash_type = hash.HashType.md5,
+            .hash_bytes = &[_]u8{
+                0xde, 0xad, 0xbe, 0xef,
+            },
+        },
+    };
+
+    for (tests) |tt| {
+        var tmp = helpers.tmpDirWithPath(.{});
+        defer tmp.cleanup();
+
+        try helpers.createTestFiles(testing.io, tmp.tmp.dir, &[_]helpers.TestFile{
+            tt.on_disk,
+        });
+
+        const file_path = try path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            tt.relative_path,
+        });
+        defer testing.allocator.free(file_path);
+
+        const CaptureType = helpers.CallbackCapture(prog.HashProgress);
+        var capture: CaptureType = .init(testing.allocator);
+        defer capture.deinit();
+
+        var file = File{
+            .path = file_path,
+            .mtime = tt.mtime,
+            .size = tt.size,
+            .hash_type = tt.hash_type,
+            .hash_bytes = tt.hash_bytes,
+        };
+        // stack-allocated, so no: defer file.deinit(testing.allocator);
+
+        const actual = file.verify(
+            testing.io,
+            testing.allocator,
+            &CaptureType.cb,
+            &capture,
+        );
+
+        if (tt.expected_error) |err| {
+            try testing.expectError(err, actual);
+            continue;
+        }
+
+        try testing.expectEqual(tt.expected, actual);
+        if (tt.expected != .file_missing and tt.expected != .mismatch_size) {
+            try helpers.expectEqualSlicesDeep(
+                prog.HashProgress,
+                &[_]prog.HashProgress{
+                    .{ .bytes_read = 12, .bytes_total = 12 },
+                },
+                capture.captures.items,
+            );
+        } else {
+            try testing.expectEqual(0, capture.captures.items.len);
+        }
     }
 }
