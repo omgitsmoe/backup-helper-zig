@@ -16,6 +16,11 @@ pub const VerifyProgressFn = *const fn (
     context: *anyopaque,
 ) anyerror!void;
 
+pub const HashProgressFn = *const fn (
+    progress: HashProgress,
+    context: *anyopaque,
+) anyerror!void;
+
 pub const MostCurrentProgress = union(enum) {
     /// Found a hash file that will be included in the most current hash file.
     found_file: []const u8,

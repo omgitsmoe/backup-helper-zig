@@ -4,6 +4,8 @@ const Dir = std.Io.Dir;
 const Io = std.Io;
 const testing = std.testing;
 
+const prog = @import("progress.zig");
+
 pub const HashType = enum {
     md5,
     sha256,
@@ -46,14 +48,20 @@ pub const HashType = enum {
     }
 };
 
-pub fn hashFile(io: Io, file: std.Io.File, comptime hash_type: HashType) ![hash_type.toHasher().digest_length]u8 {
+pub fn hashFile(
+    io: Io,
+    file: std.Io.File,
+    comptime hash_type: HashType,
+    progress: ?*const fn (bytes_read: u64, context: *anyopaque) anyerror!void,
+    context: *anyopaque,
+) ![hash_type.toHasher().digest_length]u8 {
     const hasher_type = hash_type.toHasher();
     var hasher = hasher_type.init(.{});
-    // const file = try Dir.openFileAbsolute(io, path, .{ .allow_directory = false });
 
     var buf: [65536]u8 = undefined;
     var r = file.reader(io, &buf);
 
+    var read_total: u64 = 0;
     while (true) {
         // NOTE: read __at least__ 1 byte (otherwise error.EndOfStream)
         //       then clear the buffered content that was returned
@@ -61,6 +69,11 @@ pub fn hashFile(io: Io, file: std.Io.File, comptime hash_type: HashType) ![hash_
         defer r.interface.toss(chunk.len);
 
         hasher.update(chunk);
+
+        read_total += chunk.len;
+        if (progress) |func| {
+            try func(read_total, context);
+        }
     }
 
     var hashBytes: [hasher_type.digest_length]u8 = undefined;
@@ -69,6 +82,7 @@ pub fn hashFile(io: Io, file: std.Io.File, comptime hash_type: HashType) ![hash_
 }
 
 test hashFile {
+    const helpers = @import("test_helpers.zig");
     const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
@@ -91,12 +105,18 @@ test hashFile {
     };
     hashTypeToExpected.put(.sha256, &expectedSha256Bytes);
 
+    const CbCapture = helpers.CallbackCapture(u64);
+    var capture: CbCapture = .init(testing.allocator);
+    defer capture.deinit();
+
     inline for ([_]HashType{ .md5, .sha256 }) |hash_type| {
         const file = try tmp.dir.openFile(io, "file.txt", .{});
         defer file.close(io);
-        const actualBytes = try hashFile(io, file, hash_type);
+        const actualBytes = try hashFile(io, file, hash_type, &CbCapture.cb, &capture);
 
         const expectedBytes = hashTypeToExpected.get(hash_type) orelse @panic("missing mapping");
         try testing.expectEqualSlices(u8, expectedBytes[0..], &actualBytes);
     }
+
+    try helpers.expectEqualSlicesDeep(u64, &[_]u64{ 12, 12 }, capture.captures.items);
 }

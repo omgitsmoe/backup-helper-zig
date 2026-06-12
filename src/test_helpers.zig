@@ -138,11 +138,14 @@ fn isStringSlice(comptime T: type) bool {
 
 fn printValue(w: *std.Io.Writer, value: anytype) !void {
     const T = @TypeOf(value);
+    const ti = @typeInfo(T);
 
     if (comptime isStringSlice(T)) {
         try w.print("{any}", .{value});
         try w.print("\nas str: \"{s}\"", .{value});
-    } else if (@hasDecl(T, "format")) {
+    } else if ((ti == .@"struct" or ti == .@"union" or
+        ti == .@"enum" or ti == .@"opaque") and @hasDecl(T, "format"))
+    {
         try w.print("{f}", .{value});
     } else {
         try w.print("{any}", .{value});
@@ -245,6 +248,8 @@ pub fn CallbackCapture(comptime T: type) type {
         arena: std.heap.ArenaAllocator,
         captures: std.ArrayList(T),
 
+        const Self = @This();
+
         pub fn init(allocator: std.mem.Allocator) @This() {
             return .{
                 .arena = .init(allocator),
@@ -253,15 +258,38 @@ pub fn CallbackCapture(comptime T: type) type {
         }
 
         pub fn cb(progress: T, context: *anyopaque) anyerror!void {
-            var self: *@This() = @ptrCast(@alignCast(context));
+            var self: *Self = @ptrCast(@alignCast(context));
 
             try self.captures.append(
                 self.arena.allocator(),
-                try progress.clone(self.arena.allocator()),
+                try Self.cloneOrCopy(progress, self.arena.allocator()),
             );
         }
 
+        pub fn cbVoid(progress: T, context: *anyopaque) void {
+            var self: *Self = @ptrCast(@alignCast(context));
+
+            self.captures.append(
+                self.arena.allocator(),
+                Self.cloneOrCopy(progress, self.arena.allocator()) catch
+                    @panic("failed to copy callback value"),
+            ) catch @panic("failed to append callback value");
+        }
+
+        fn cloneOrCopy(value: T, allocator: std.mem.Allocator) !T {
+            return switch (@typeInfo(T)) {
+                .@"struct", .@"union", .@"enum", .@"opaque" => blk: {
+                    if (@hasDecl(T, "clone")) {
+                        break :blk try value.clone(allocator);
+                    }
+                    break :blk value;
+                },
+                else => value, // primitives, etc.
+            };
+        }
+
         pub fn deinit(self: *@This()) void {
+            self.captures.deinit(self.arena.allocator());
             self.arena.deinit();
         }
     };

@@ -5,6 +5,7 @@ const testing = std.testing;
 const path = std.fs.path;
 
 const hash = @import("hash.zig");
+const prog = @import("progress.zig");
 
 pub const VerifyResult = enum {
     /// The hashes matched.
@@ -54,7 +55,30 @@ pub const File = struct {
         self.size = st.size;
     }
 
-    pub fn hash_from_disk(self: *@This(), io: Io, allocator: std.mem.Allocator) !void {
+    const hashFileCbContext = struct {
+        bytes_total: u64,
+        progress: ?prog.HashProgressFn,
+        context: *anyopaque,
+    };
+
+    fn hashFileCb(bytes_read: u64, context: *anyopaque) anyerror!void {
+        const cb_context: *hashFileCbContext = @ptrCast(@alignCast(context));
+
+        if (cb_context.progress) |progress_fn| {
+            try progress_fn(.{
+                .bytes_read = bytes_read,
+                .bytes_total = cb_context.bytes_total,
+            }, cb_context.context);
+        }
+    }
+
+    pub fn hash_from_disk(
+        self: *@This(),
+        io: Io,
+        allocator: std.mem.Allocator,
+        progress: ?prog.HashProgressFn,
+        context: *anyopaque,
+    ) !void {
         const file = try Io.Dir.openFileAbsolute(
             io,
             self.path,
@@ -62,11 +86,18 @@ pub const File = struct {
         );
         defer file.close(io);
 
+        const stat = try file.stat(io);
+        var cb_context = hashFileCbContext{
+            .bytes_total = stat.size,
+            .progress = progress,
+            .context = context,
+        };
+
         inline for (std.meta.fields(hash.HashType)) |f| {
             if (self.hash_type == @field(hash.HashType, f.name)) {
                 const ht = @field(hash.HashType, f.name);
 
-                const hash_bytes = try hash.hashFile(io, file, ht);
+                const hash_bytes = try hash.hashFile(io, file, ht, &hashFileCb, &cb_context);
                 self.hash_bytes = try allocator.dupe(u8, &hash_bytes);
                 return;
             }
@@ -80,6 +111,9 @@ pub const File = struct {
             allocator.free(self.hash_bytes);
         }
     }
+
+    // pub fn verify(self: *@This(), progress: ?prog.HashProgressFn) VerifyResult {
+    // }
 };
 
 test "metadata_from_disk" {
@@ -182,6 +216,10 @@ test "hash_from_disk" {
     defer testing.allocator.free(file_path);
 
     {
+        const CaptureType = helpers.CallbackCapture(prog.HashProgress);
+        var capture: CaptureType = .init(testing.allocator);
+        defer capture.deinit();
+
         var file = File{
             .path = file_path,
             .mtime = null,
@@ -191,12 +229,28 @@ test "hash_from_disk" {
         };
         defer file.deinit(testing.allocator);
 
-        try file.hash_from_disk(testing.io, testing.allocator);
+        try file.hash_from_disk(
+            testing.io,
+            testing.allocator,
+            &CaptureType.cb,
+            &capture,
+        );
 
         try testing.expectEqualSlices(u8, &expectedMd5, file.hash_bytes);
+        try helpers.expectEqualSlicesDeep(
+            prog.HashProgress,
+            &[_]prog.HashProgress{
+                .{ .bytes_read = 12, .bytes_total = 12 },
+            },
+            capture.captures.items,
+        );
     }
 
     {
+        const CaptureType = helpers.CallbackCapture(prog.HashProgress);
+        var capture: CaptureType = .init(testing.allocator);
+        defer capture.deinit();
+
         var file = File{
             .path = file_path,
             .mtime = null,
@@ -206,8 +260,20 @@ test "hash_from_disk" {
         };
         defer file.deinit(testing.allocator);
 
-        try file.hash_from_disk(testing.io, testing.allocator);
+        try file.hash_from_disk(
+            testing.io,
+            testing.allocator,
+            &CaptureType.cb,
+            &capture,
+        );
 
         try testing.expectEqualSlices(u8, &expectedSha256, file.hash_bytes);
+        try helpers.expectEqualSlicesDeep(
+            prog.HashProgress,
+            &[_]prog.HashProgress{
+                .{ .bytes_read = 12, .bytes_total = 12 },
+            },
+            capture.captures.items,
+        );
     }
 }
