@@ -77,8 +77,7 @@ fn timestampToF64(timestamp: Io.Timestamp) f64 {
 
 test "serialize" {
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
 
     const expected =

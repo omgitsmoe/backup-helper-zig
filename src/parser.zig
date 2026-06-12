@@ -204,8 +204,7 @@ test "version 1: full" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input =
         \\# version 1
@@ -271,8 +270,7 @@ test "version 1: optional fields missing" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input =
         \\# version 1
@@ -336,8 +334,7 @@ test "version 0: full" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input =
         \\1337.00133,md5,deadbeef foo/bar/file.txt
@@ -402,8 +399,7 @@ test "version 0: optional fields missing" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input =
         \\,md5,deadbeef foo/bar/file.txt
@@ -466,8 +462,7 @@ test "empty" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input = "";
 
@@ -509,8 +504,7 @@ test "empty" {
 
 test "parse errors" {
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input_expected_error = [_]struct {
         input: []const u8,

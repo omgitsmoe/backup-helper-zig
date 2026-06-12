@@ -78,8 +78,7 @@ test "single" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input =
         \\deadbeef foo/bar/file.txt
@@ -142,8 +141,7 @@ test "single empty" {
     const helpers = @import("test_helpers.zig");
 
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input = "";
 
@@ -185,8 +183,7 @@ test "single empty" {
 
 test "parse errors" {
     var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    // NOTE: Io.Dir.cwd().realPath(...) is broken always error.FileNotFound
-    const abs_end_idx = try Io.Dir.cwd().realPathFile(testing.io, ".", &buf);
+    const abs_end_idx = try std.process.currentPath(testing.io, &buf);
     const abs = buf[0..abs_end_idx];
     const input_expected_error = [_]struct {
         input: []const u8,

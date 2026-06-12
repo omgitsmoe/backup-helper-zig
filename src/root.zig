@@ -6,7 +6,6 @@ pub const discover = @import("discover.zig");
 pub const store = @import("store.zig");
 
 // TODO:
-// - discover: files + hash files
 // - incremental
 // - build most current
 // - verify file/collection
