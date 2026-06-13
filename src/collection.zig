@@ -7,6 +7,31 @@ const file = @import("file.zig");
 const prog = @import("progress.zig");
 const hash = @import("hash.zig");
 
+pub const IterateMapError = error{
+    OutOfMemory,
+    MissingHash,
+    CallbackFailed,
+} || Io.File.OpenError || Io.File.StatError;
+
+/// Overridable for deterministic test iteration.
+/// Default iterates hash map entries in arbitrary order.
+pub var iterateMap: *const fn (
+    map: *const std.StringHashMap(file.File),
+    cb: *const fn (path: []const u8, file: *file.File, ctx: *anyopaque) IterateMapError!void,
+    ctx: *anyopaque,
+) IterateMapError!void = defaultIterateMap;
+
+fn defaultIterateMap(
+    map: *const std.StringHashMap(file.File),
+    cb: *const fn (path: []const u8, file: *file.File, ctx: *anyopaque) IterateMapError!void,
+    ctx: *anyopaque,
+) IterateMapError!void {
+    var iter = map.iterator();
+    while (iter.next()) |entry| {
+        try cb(entry.key_ptr.*, entry.value_ptr, ctx);
+    }
+}
+
 pub const Collection = struct {
     root_path: []const u8,
     name: []const u8,
@@ -114,92 +139,99 @@ pub const Collection = struct {
     ) (Error || prog.CallbackError || Io.File.OpenError || Io.File.StatError)!void {
         const alloc = self.arena.child_allocator;
 
-        var keys: std.ArrayList([]const u8) = .empty;
-        defer keys.deinit(alloc);
-
-        {
-            var iter = self.iterator();
-            while (iter.next()) |entry| {
-                try keys.append(alloc, entry.key_ptr.*);
-            }
-        }
-
-        std.sort.pdq([]const u8, keys.items, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.lessThan(u8, a, b);
-            }
-        }.lessThan);
-
         var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
-        var fixed = std.heap.FixedBufferAllocator.init(&path_buf);
-        const fba = fixed.allocator();
+        const fixed = std.heap.FixedBufferAllocator.init(&path_buf);
 
-        const CallbackContext = struct {
-            progress: prog.VerifyProgressFn,
+        const ProcessCtx = struct {
+            const This = @This();
+            self: *const Collection,
+            io: Io,
+            alloc: std.mem.Allocator,
+            fba: std.heap.FixedBufferAllocator,
+            include: ?IncludeFn,
             context: *anyopaque,
+            progress: prog.VerifyProgressFn,
+            file_number_processed: u64,
+            file_number_total: u64,
+            size_processed_bytes: u64,
+            size_total_bytes: u64,
 
-            fn callback(p: prog.HashProgress, ctx: *anyopaque) prog.CallbackError!void {
-                const s: *@This() = @ptrCast(@alignCast(ctx));
+            fn process(path: []const u8, entry: *file.File, ctx: *anyopaque) IterateMapError!void {
+                const s: *This = @ptrCast(@alignCast(ctx));
+                const relative_path = try std_path.relative(
+                    s.fba.allocator(),
+                    "",
+                    null,
+                    s.self.root_path,
+                    path,
+                );
+                const is_included = if (s.include) |include_fn|
+                    include_fn(relative_path, s.context)
+                else
+                    true;
 
-                try s.progress(&.{ .during = p }, s.context);
+                if (!is_included) return;
+
+                const HashProgressCtx = struct {
+                    progress: prog.VerifyProgressFn,
+                    context: *anyopaque,
+
+                    fn callback(p: prog.HashProgress, cb_ctx: *anyopaque) prog.CallbackError!void {
+                        const hs: *@This() = @ptrCast(@alignCast(cb_ctx));
+                        try hs.progress(&.{ .during = p }, hs.context);
+                    }
+                };
+
+                var pre = prog.VerifyProgressCommon{
+                    .tree_root = s.self.root_path,
+                    .relative_path = relative_path,
+                    .file_number_processed = s.file_number_processed,
+                    .file_number_total = s.file_number_total,
+                    .size_processed_bytes = s.size_processed_bytes,
+                    .size_total_bytes = s.size_total_bytes,
+                };
+
+                try s.progress(&.{ .pre = pre }, s.context);
+
+                var hctx = HashProgressCtx{
+                    .context = s.context,
+                    .progress = s.progress,
+                };
+                const result = try entry.verify(
+                    s.io,
+                    s.alloc,
+                    &HashProgressCtx.callback,
+                    &hctx,
+                );
+
+                s.size_processed_bytes += entry.size orelse 0;
+                s.file_number_processed += 1;
+
+                pre.size_processed_bytes = s.size_processed_bytes;
+                pre.file_number_processed = s.file_number_processed;
+
+                try s.progress(
+                    &.{ .post = .{ .progress = pre, .result = result } },
+                    s.context,
+                );
             }
         };
 
-        var file_number_processed: u64 = 0;
-        const file_number_total: u64 = self.path_to_file.count();
-        var size_processed_bytes: u64 = 0;
-        const size_total_bytes: u64 = self.known_size_bytes();
-        for (keys.items) |key| {
-            const entry = self.path_to_file.getPtr(key).?;
-            const relative_path = try std_path.relative(
-                fba,
-                "",
-                null,
-                self.root_path,
-                key,
-            );
-            const is_included = if (include) |include_fn|
-                include_fn(relative_path, context)
-            else
-                true;
+        var proc_ctx = ProcessCtx{
+            .self = self,
+            .io = io,
+            .alloc = alloc,
+            .fba = fixed,
+            .include = include,
+            .context = context,
+            .progress = progress,
+            .file_number_processed = 0,
+            .file_number_total = self.path_to_file.count(),
+            .size_processed_bytes = 0,
+            .size_total_bytes = self.known_size_bytes(),
+        };
 
-            if (!is_included) {
-                continue;
-            }
-
-            var pre = prog.VerifyProgressCommon{
-                .tree_root = self.root_path,
-                .relative_path = relative_path,
-                .file_number_processed = file_number_processed,
-                .file_number_total = file_number_total,
-                .size_processed_bytes = size_processed_bytes,
-                .size_total_bytes = size_total_bytes,
-            };
-
-            try progress(&.{ .pre = pre }, context);
-
-            var ctx = CallbackContext{
-                .context = context,
-                .progress = progress,
-            };
-            const result = try entry.verify(
-                io,
-                alloc,
-                &CallbackContext.callback,
-                &ctx,
-            );
-
-            size_processed_bytes += entry.*.size orelse 0;
-            file_number_processed += 1;
-
-            pre.size_processed_bytes = size_processed_bytes;
-            pre.file_number_processed = file_number_processed;
-
-            try progress(
-                &.{ .post = .{ .progress = pre, .result = result } },
-                context,
-            );
-        }
+        try iterateMap(&self.path_to_file, ProcessCtx.process, &proc_ctx);
     }
 };
 
@@ -441,6 +473,35 @@ test "Collection verify" {
             },
         },
     };
+
+    const oldIterateMap = iterateMap;
+    defer iterateMap = oldIterateMap;
+
+    iterateMap = struct {
+        fn sorted(
+            map: *const std.StringHashMap(file.File),
+            cb: *const fn (path: []const u8, file: *file.File, ctx: *anyopaque) IterateMapError!void,
+            ctx_: *anyopaque,
+        ) IterateMapError!void {
+            const alloc = std.testing.allocator;
+            var keys: std.ArrayList([]const u8) = .empty;
+            defer keys.deinit(alloc);
+            {
+                var iter = map.iterator();
+                while (iter.next()) |entry| {
+                    try keys.append(alloc, entry.key_ptr.*);
+                }
+            }
+            std.sort.pdq([]const u8, keys.items, {}, struct {
+                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.lessThan(u8, a, b);
+                }
+            }.lessThan);
+            for (keys.items) |key| {
+                try cb(key, map.getPtr(key).?, ctx_);
+            }
+        }
+    }.sorted;
 
     const CaptureType = helpers.CallbackCapture(*const prog.VerifyProgress);
     var capture: CaptureType = .init(testing.allocator);
