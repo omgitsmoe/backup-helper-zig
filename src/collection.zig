@@ -4,6 +4,8 @@ const std_path = std.fs.path;
 const testing = std.testing;
 
 const file = @import("file.zig");
+const prog = @import("progress.zig");
+const hash = @import("hash.zig");
 
 pub const Collection = struct {
     root_path: []const u8,
@@ -18,7 +20,8 @@ pub const Collection = struct {
         PathNotAbsolute,
         WouldClobber,
         OutOfMemory,
-    };
+        MissingHash,
+    } || prog.CallbackError;
 
     /// Collection does not take ownership of `path`
     pub fn init(allocator: std.mem.Allocator, path: []const u8) Error!Collection {
@@ -88,6 +91,115 @@ pub const Collection = struct {
 
     pub fn iterator(self: *const @This()) Iterator {
         return self.path_to_file.iterator();
+    }
+
+    fn known_size_bytes(self: *const @This()) u64 {
+        var iter = self.iterator();
+        var bytes: u64 = 0;
+        while (iter.next()) |entry| {
+            bytes += entry.value_ptr.*.size orelse 0;
+        }
+
+        return bytes;
+    }
+
+    pub const IncludeFn = *const fn (relative_path: []const u8, context: *anyopaque) bool;
+
+    pub fn verify(
+        self: *const @This(),
+        io: Io,
+        include: ?IncludeFn,
+        progress: prog.VerifyProgressFn,
+        context: *anyopaque,
+    ) (Error || prog.CallbackError || Io.File.OpenError || Io.File.StatError)!void {
+        const alloc = self.arena.child_allocator;
+
+        var keys: std.ArrayList([]const u8) = .empty;
+        defer keys.deinit(alloc);
+
+        {
+            var iter = self.iterator();
+            while (iter.next()) |entry| {
+                try keys.append(alloc, entry.key_ptr.*);
+            }
+        }
+
+        std.sort.pdq([]const u8, keys.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+
+        var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&path_buf);
+        const fba = fixed.allocator();
+
+        const CallbackContext = struct {
+            progress: prog.VerifyProgressFn,
+            context: *anyopaque,
+
+            fn callback(p: prog.HashProgress, ctx: *anyopaque) prog.CallbackError!void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+
+                try s.progress(&.{ .during = p }, s.context);
+            }
+        };
+
+        var file_number_processed: u64 = 0;
+        const file_number_total: u64 = self.path_to_file.count();
+        var size_processed_bytes: u64 = 0;
+        const size_total_bytes: u64 = self.known_size_bytes();
+        for (keys.items) |key| {
+            const entry = self.path_to_file.getPtr(key).?;
+            const relative_path = try std_path.relative(
+                fba,
+                "",
+                null,
+                self.root_path,
+                key,
+            );
+            const is_included = if (include) |include_fn|
+                include_fn(relative_path, context)
+            else
+                true;
+
+            if (!is_included) {
+                continue;
+            }
+
+            var pre = prog.VerifyProgressCommon{
+                .tree_root = self.root_path,
+                .relative_path = relative_path,
+                .file_number_processed = file_number_processed,
+                .file_number_total = file_number_total,
+                .size_processed_bytes = size_processed_bytes,
+                .size_total_bytes = size_total_bytes,
+            };
+
+            try progress(&.{ .pre = pre }, context);
+
+            var ctx = CallbackContext{
+                .context = context,
+                .progress = progress,
+            };
+            const result = try entry.verify(
+                io,
+                alloc,
+                &CallbackContext.callback,
+                &ctx,
+            );
+
+            size_processed_bytes += entry.*.size orelse 0;
+            file_number_processed += 1;
+
+            pre.size_processed_bytes = size_processed_bytes;
+            pre.file_number_processed = file_number_processed;
+
+            try progress(
+                &.{ .post = .{ .progress = pre, .result = result } },
+                context,
+            );
+        }
     }
 };
 
@@ -174,4 +286,176 @@ test "Collection normalizes path" {
 
     const expected = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
     try testing.expectEqualStrings(collection.root_path, expected);
+}
+
+test "Collection verify" {
+    const helpers = @import("test_helpers.zig");
+
+    var tmp = helpers.tmpDirWithPath(.{});
+    defer tmp.cleanup();
+
+    const collection_path = try std_path.join(testing.allocator, &[_][]const u8{
+        tmp.absolute_path,
+        "foo.cshd",
+    });
+    defer testing.allocator.free(collection_path);
+
+    var collection = try Collection.init(testing.allocator, collection_path);
+    defer collection.deinit();
+
+    const test_files = &[_]helpers.TestFile{
+        .{
+            .relativePath = "bar/xer/vid.mp4",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+            .content = "vid123",
+        },
+        .{
+            .relativePath = "foo/bar/file.txt",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .content = "hello world!",
+        },
+        .{
+            .relativePath = "xer.bin",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(300)),
+            .content = "onetwothree",
+        },
+    };
+
+    try helpers.createTestFiles(testing.io, tmp.tmp.dir, test_files);
+
+    const absolute_paths = &[_][]const u8{
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[0].relativePath,
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[1].relativePath,
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[2].relativePath,
+        }),
+    };
+    defer {
+        for (absolute_paths) |p| {
+            testing.allocator.free(p);
+        }
+    }
+
+    try collection.putNoClobber(.{
+        .path = absolute_paths[0],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+        .size = 11111,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[1],
+        .mtime = null,
+        .size = null,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{
+            0xfc, 0x3f, 0xf9, 0x8e, 0x8c, 0x6a, 0x0d, 0x30, 0x87, 0xd5,
+            0x15, 0xc0, 0x47, 0x3f, 0x86, 0x77,
+        },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[2],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(300)),
+        .size = 11,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+
+    const expected_callbacks = &[_]*const prog.VerifyProgress{
+        &.{
+            .pre = .{
+                .file_number_processed = 0,
+                .file_number_total = 3,
+                .size_processed_bytes = 0,
+                .size_total_bytes = 11122,
+                .relative_path = test_files[0].relativePath,
+                .tree_root = tmp.absolute_path,
+            },
+        },
+        &.{
+            .post = .{
+                .result = .mismatch_size,
+                .progress = .{
+                    .file_number_processed = 1,
+                    .file_number_total = 3,
+                    .size_processed_bytes = 11111,
+                    .size_total_bytes = 11122,
+                    .relative_path = test_files[0].relativePath,
+                    .tree_root = tmp.absolute_path,
+                },
+            },
+        },
+        &.{
+            .pre = .{
+                .file_number_processed = 1,
+                .file_number_total = 3,
+                .size_processed_bytes = 11111,
+                .size_total_bytes = 11122,
+                .relative_path = test_files[1].relativePath,
+                .tree_root = tmp.absolute_path,
+            },
+        },
+        &.{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
+        &.{
+            .post = .{
+                .result = .ok,
+                .progress = .{
+                    .file_number_processed = 2,
+                    .file_number_total = 3,
+                    .size_processed_bytes = 11111,
+                    .size_total_bytes = 11122,
+                    .relative_path = test_files[1].relativePath,
+                    .tree_root = tmp.absolute_path,
+                },
+            },
+        },
+        &.{
+            .pre = .{
+                .file_number_processed = 2,
+                .file_number_total = 3,
+                .size_processed_bytes = 11111,
+                .size_total_bytes = 11122,
+                .relative_path = test_files[2].relativePath,
+                .tree_root = tmp.absolute_path,
+            },
+        },
+        &.{ .during = .{ .bytes_read = 11, .bytes_total = 11 } },
+        &.{
+            .post = .{
+                .result = .mismatch_corrupted,
+                .progress = .{
+                    .file_number_processed = 3,
+                    .file_number_total = 3,
+                    .size_processed_bytes = 11122,
+                    .size_total_bytes = 11122,
+                    .relative_path = test_files[2].relativePath,
+                    .tree_root = tmp.absolute_path,
+                },
+            },
+        },
+    };
+
+    const CaptureType = helpers.CallbackCapture(*const prog.VerifyProgress);
+    var capture: CaptureType = .init(testing.allocator);
+    defer capture.deinit();
+
+    try collection.verify(
+        testing.io,
+        null,
+        &CaptureType.cb,
+        &capture,
+    );
+
+    try helpers.expectEqualSlicesDeep(
+        *const prog.VerifyProgress,
+        expected_callbacks,
+        capture.captures.items,
+    );
 }

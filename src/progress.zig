@@ -20,7 +20,7 @@ pub const IncrementalProgressFn = *const fn (
 ) CallbackError!void;
 
 pub const VerifyProgressFn = *const fn (
-    progress: VerifyProgress,
+    progress: *const VerifyProgress,
     context: *anyopaque,
 ) CallbackError!void;
 
@@ -225,10 +225,18 @@ pub const HashProgress = struct {
     bytes_total: u64,
 };
 
-pub const VerifyProgress = struct {
+pub const VerifyProgress = union(enum) {
     pre: VerifyProgressCommon,
     during: HashProgress,
     post: VerifyProgressPost,
+
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
+        return switch (self) {
+            .pre => |v| .{ .pre = try v.clone(allocator) },
+            .during => |v| .{ .during = v },
+            .post => |v| .{ .post = try v.clone(allocator) },
+        };
+    }
 };
 
 pub const VerifyProgressCommon = struct {
@@ -246,9 +254,27 @@ pub const VerifyProgressCommon = struct {
     /// Note that only files which have size information stored in the
     /// checksum file count towards the total bytes to process.
     size_total_bytes: u64,
+
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
+        return .{
+            .tree_root = try allocator.dupe(u8, self.tree_root),
+            .relative_path = try allocator.dupe(u8, self.relative_path),
+            .file_number_processed = self.file_number_processed,
+            .file_number_total = self.file_number_total,
+            .size_processed_bytes = self.size_processed_bytes,
+            .size_total_bytes = self.size_total_bytes,
+        };
+    }
 };
 
 pub const VerifyProgressPost = struct {
     progress: VerifyProgressCommon,
     result: VerifyResult,
+
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
+        return .{
+            .progress = try self.progress.clone(allocator),
+            .result = self.result,
+        };
+    }
 };

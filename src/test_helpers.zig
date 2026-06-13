@@ -159,10 +159,12 @@ fn deepEql(a: anytype, b: @TypeOf(a)) bool {
 
     switch (@typeInfo(T)) {
         .pointer => |ptr| {
-            // Only handle slices ([]T), not single pointers (*T)
             if (ptr.size == .slice) {
                 const Child = ptr.child;
                 return std.mem.eql(Child, a, b);
+            }
+            if (ptr.size == .one) {
+                return deepEql(a.*, b.*);
             }
             return a == b;
         },
@@ -284,6 +286,22 @@ pub fn CallbackCapture(comptime T: type) type {
                         break :blk try value.clone(allocator);
                     }
                     break :blk value;
+                },
+                .pointer => |ptr_info| blk: {
+                    if (ptr_info.size != .one) break :blk value;
+                    const Child = ptr_info.child;
+                    switch (@typeInfo(Child)) {
+                        .@"struct", .@"union" => {
+                            if (@hasDecl(Child, "clone")) {
+                                const cloned = try value.*.clone(allocator);
+                                const ptr = try allocator.create(Child);
+                                ptr.* = cloned;
+                                break :blk ptr;
+                            }
+                            break :blk value;
+                        },
+                        else => break :blk value,
+                    }
                 },
                 else => value, // primitives, etc.
             };
