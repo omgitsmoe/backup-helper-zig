@@ -146,8 +146,10 @@ pub const Collection = struct {
 
     pub const IncludeFn = *const fn (relative_path: []const u8, context: *anyopaque) bool;
 
-    pub fn verify(
+    pub fn verifyImpl(
         self: *const @This(),
+        comptime IteratorType: type,
+        iter: *IteratorType,
         io: Io,
         include: ?IncludeFn,
         progress: prog.VerifyProgressFn,
@@ -164,102 +166,83 @@ pub const Collection = struct {
         var size_processed_bytes: u64 = 0;
         const size_total_bytes: u64 = self.known_size_bytes();
 
-        const V = struct {
-            fba: std.mem.Allocator,
-            root_path: []const u8,
-            include: ?IncludeFn,
-            context: *anyopaque,
-            progress: prog.VerifyProgressFn,
-            io: Io,
-            alloc: std.mem.Allocator,
-            file_number_processed: *u64,
-            size_processed_bytes: *u64,
-            file_number_total: u64,
-            size_total_bytes: u64,
+        while (iter.next()) |kv| {
+            const key = kv.key_ptr.*;
+            const f_entry = kv.value_ptr;
+            const relative_path = try std_path.relative(
+                fba,
+                "",
+                null,
+                self.root_path,
+                key,
+            );
+            const is_included = if (include) |include_fn|
+                include_fn(relative_path, context)
+            else
+                true;
 
-            fn entry(st: @This(), kv: anytype) (Error || prog.CallbackError || Io.File.OpenError || Io.File.StatError)!void {
-                const key = kv.key_ptr.*;
-                const f_entry = kv.value_ptr;
-                const relative_path = try std_path.relative(
-                    st.fba,
-                    "",
-                    null,
-                    st.root_path,
-                    key,
-                );
-                const is_included = if (st.include) |include_fn|
-                    include_fn(relative_path, st.context)
-                else
-                    true;
-
-                if (!is_included) {
-                    st.size_processed_bytes.* += f_entry.*.size orelse 0;
-                    st.file_number_processed.* += 1;
-                    return;
-                }
-
-                var pre = prog.VerifyProgressCommon{
-                    .tree_root = st.root_path,
-                    .relative_path = relative_path,
-                    .file_number_processed = st.file_number_processed.*,
-                    .file_number_total = st.file_number_total,
-                    .size_processed_bytes = st.size_processed_bytes.*,
-                    .size_total_bytes = st.size_total_bytes,
-                };
-
-                try st.progress(&.{ .pre = pre }, st.context);
-
-                const Ctx = struct {
-                    progress: prog.VerifyProgressFn,
-                    context: *anyopaque,
-
-                    fn callback(p: prog.HashProgress, c: *anyopaque) prog.CallbackError!void {
-                        const s: *@This() = @ptrCast(@alignCast(c));
-                        try s.progress(&.{ .during = p }, s.context);
-                    }
-                };
-                var ctx = Ctx{ .context = st.context, .progress = st.progress };
-                const result = try f_entry.verify(
-                    st.io,
-                    st.alloc,
-                    &Ctx.callback,
-                    &ctx,
-                );
-
-                st.size_processed_bytes.* += f_entry.*.size orelse 0;
-                st.file_number_processed.* += 1;
-
-                pre.size_processed_bytes = st.size_processed_bytes.*;
-                pre.file_number_processed = st.file_number_processed.*;
-
-                try st.progress(
-                    &.{ .post = .{ .progress = pre, .result = result } },
-                    st.context,
-                );
+            if (!is_included) {
+                size_processed_bytes += f_entry.*.size orelse 0;
+                file_number_processed += 1;
+                continue;
             }
-        };
 
-        var verifier = V{
-            .fba = fba,
-            .root_path = self.root_path,
-            .include = include,
-            .context = context,
-            .progress = progress,
-            .io = io,
-            .alloc = alloc,
-            .file_number_processed = &file_number_processed,
-            .size_processed_bytes = &size_processed_bytes,
-            .file_number_total = file_number_total,
-            .size_total_bytes = size_total_bytes,
-        };
+            var pre = prog.VerifyProgressCommon{
+                .tree_root = self.root_path,
+                .relative_path = relative_path,
+                .file_number_processed = file_number_processed,
+                .file_number_total = file_number_total,
+                .size_processed_bytes = size_processed_bytes,
+                .size_total_bytes = size_total_bytes,
+            };
 
+            try progress(&.{ .pre = pre }, context);
+
+            const Ctx = struct {
+                progress: prog.VerifyProgressFn,
+                context: *anyopaque,
+
+                fn callback(p: prog.HashProgress, c: *anyopaque) prog.CallbackError!void {
+                    const s: *@This() = @ptrCast(@alignCast(c));
+                    try s.progress(&.{ .during = p }, s.context);
+                }
+            };
+            var ctx = Ctx{ .context = context, .progress = progress };
+            const result = try f_entry.verify(
+                io,
+                alloc,
+                &Ctx.callback,
+                &ctx,
+            );
+
+            size_processed_bytes += f_entry.*.size orelse 0;
+            file_number_processed += 1;
+
+            pre.size_processed_bytes = size_processed_bytes;
+            pre.file_number_processed = file_number_processed;
+
+            try progress(
+                &.{ .post = .{ .progress = pre, .result = result } },
+                context,
+            );
+        }
+    }
+
+    pub fn verify(
+        self: *const @This(),
+        io: Io,
+        include: ?IncludeFn,
+        progress: prog.VerifyProgressFn,
+        context: *anyopaque,
+    ) (Error || prog.CallbackError || Io.File.OpenError || Io.File.StatError)!void {
         if (comptime builtin.is_test) {
+            const alloc = self.arena.child_allocator;
             var iter = try self.sortedIterator(alloc);
             defer iter.deinit(alloc);
-            while (iter.next()) |kv| try verifier.entry(kv);
+            try self.verifyImpl(SortedIterator, &iter, io, include, progress, context);
         } else {
             var iter = self.iterator();
-            while (iter.next()) |kv| try verifier.entry(kv);
+            try self.verifyImpl(Iterator, &iter, io, include, progress, context);
         }
     }
 };
