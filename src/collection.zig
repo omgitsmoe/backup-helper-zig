@@ -181,14 +181,22 @@ pub const Collection = struct {
                 const key = kv.key_ptr.*;
                 const f_entry = kv.value_ptr;
                 const relative_path = try std_path.relative(
-                    st.fba, "", null, st.root_path, key,
+                    st.fba,
+                    "",
+                    null,
+                    st.root_path,
+                    key,
                 );
                 const is_included = if (st.include) |include_fn|
                     include_fn(relative_path, st.context)
                 else
                     true;
 
-                if (!is_included) return;
+                if (!is_included) {
+                    st.size_processed_bytes.* += f_entry.*.size orelse 0;
+                    st.file_number_processed.* += 1;
+                    return;
+                }
 
                 var pre = prog.VerifyProgressCommon{
                     .tree_root = st.root_path,
@@ -212,7 +220,10 @@ pub const Collection = struct {
                 };
                 var ctx = Ctx{ .context = st.context, .progress = st.progress };
                 const result = try f_entry.verify(
-                    st.io, st.alloc, &Ctx.callback, &ctx,
+                    st.io,
+                    st.alloc,
+                    &Ctx.callback,
+                    &ctx,
                 );
 
                 st.size_processed_bytes.* += f_entry.*.size orelse 0;
@@ -495,6 +506,137 @@ test "Collection verify" {
     try collection.verify(
         testing.io,
         null,
+        &CaptureType.cb,
+        &capture,
+    );
+
+    try helpers.expectEqualSlicesDeep(
+        *const prog.VerifyProgress,
+        expected_callbacks,
+        capture.captures.items,
+    );
+}
+
+test "Collection verify respects include" {
+    const helpers = @import("test_helpers.zig");
+
+    var tmp = helpers.tmpDirWithPath(.{});
+    defer tmp.cleanup();
+
+    const collection_path = try std_path.join(testing.allocator, &[_][]const u8{
+        tmp.absolute_path,
+        "foo.cshd",
+    });
+    defer testing.allocator.free(collection_path);
+
+    var collection = try Collection.init(testing.allocator, collection_path);
+    defer collection.deinit();
+
+    const test_files = &[_]helpers.TestFile{
+        .{
+            .relativePath = "bar/xer/vid.mp4",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+            .content = "vid123",
+        },
+        .{
+            .relativePath = "foo/bar/file.txt",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .content = "hello world!",
+        },
+        .{
+            .relativePath = "xer.bin",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(300)),
+            .content = "onetwothree",
+        },
+    };
+
+    try helpers.createTestFiles(testing.io, tmp.tmp.dir, test_files);
+
+    const absolute_paths = &[_][]const u8{
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[0].relativePath,
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[1].relativePath,
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[2].relativePath,
+        }),
+    };
+    defer {
+        for (absolute_paths) |p| {
+            testing.allocator.free(p);
+        }
+    }
+
+    try collection.putNoClobber(.{
+        .path = absolute_paths[0],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+        .size = 11111,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[1],
+        .mtime = null,
+        .size = null,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{
+            0xfc, 0x3f, 0xf9, 0x8e, 0x8c, 0x6a, 0x0d, 0x30, 0x87, 0xd5,
+            0x15, 0xc0, 0x47, 0x3f, 0x86, 0x77,
+        },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[2],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(300)),
+        .size = 11,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+
+    const expected_callbacks = &[_]*const prog.VerifyProgress{
+        &.{
+            .pre = .{
+                .file_number_processed = 1,
+                .file_number_total = 3,
+                .size_processed_bytes = 11111,
+                .size_total_bytes = 11122,
+                .relative_path = test_files[1].relativePath,
+                .tree_root = tmp.absolute_path,
+            },
+        },
+        &.{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
+        &.{
+            .post = .{
+                .result = .ok,
+                .progress = .{
+                    .file_number_processed = 2,
+                    .file_number_total = 3,
+                    .size_processed_bytes = 11111,
+                    .size_total_bytes = 11122,
+                    .relative_path = test_files[1].relativePath,
+                    .tree_root = tmp.absolute_path,
+                },
+            },
+        },
+    };
+
+    const include = struct {
+        pub fn incl(relative_path: []const u8, _: *anyopaque) bool {
+            return std.mem.endsWith(u8, relative_path, "file.txt");
+        }
+    }.incl;
+
+    const CaptureType = helpers.CallbackCapture(*const prog.VerifyProgress);
+    var capture: CaptureType = .init(testing.allocator);
+    defer capture.deinit();
+
+    try collection.verify(
+        testing.io,
+        &include,
         &CaptureType.cb,
         &capture,
     );
