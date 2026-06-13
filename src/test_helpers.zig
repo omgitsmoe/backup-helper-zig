@@ -313,3 +313,130 @@ pub fn CallbackCapture(comptime T: type) type {
         }
     };
 }
+
+pub fn expectEqualVerifyCallbacks(
+    expected: []const *const prog.VerifyProgress,
+    actual: []const *const prog.VerifyProgress,
+) !void {
+    const alloc = testing.allocator;
+
+    const FileData = struct {
+        pre: *const prog.VerifyProgress,
+        during: ?*const prog.VerifyProgress,
+        post: *const prog.VerifyProgress,
+        stored_size: u64,
+    };
+
+    var file_map = std.StringHashMap(FileData).init(alloc);
+    defer {
+        var it = file_map.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+        }
+        file_map.deinit();
+    }
+
+    {
+        var i: usize = 0;
+        while (i < expected.len) {
+            const first = expected[i];
+            const relative_path = switch (first.*) {
+                .pre => |p| p.relative_path,
+                else => return error.TestFailed,
+            };
+            const pre_size = switch (first.*) {
+                .pre => |p| p.size_processed_bytes,
+                else => unreachable,
+            };
+            i += 1;
+
+            var during: ?*const prog.VerifyProgress = null;
+            if (i < expected.len) {
+                switch (expected[i].*) {
+                    .during => {
+                        during = expected[i];
+                        i += 1;
+                    },
+                    else => {},
+                }
+            }
+
+            const last = expected[i];
+            switch (last.*) {
+                .post => {},
+                else => return error.TestFailed,
+            }
+            const post_size = switch (last.*) {
+                .post => |p| p.progress.size_processed_bytes,
+                else => unreachable,
+            };
+            i += 1;
+
+            try file_map.put(try alloc.dupe(u8, relative_path), FileData{
+                .pre = first,
+                .during = during,
+                .post = last,
+                .stored_size = post_size - pre_size,
+            });
+        }
+    }
+
+    var expected_file_number: u64 = 0;
+    var expected_size_processed: u64 = 0;
+
+    var i: usize = 0;
+    while (i < actual.len) {
+        const first = actual[i];
+        const relative_path = switch (first.*) {
+            .pre => |p| p.relative_path,
+            else => return error.TestFailed,
+        };
+
+        const fd = file_map.get(relative_path) orelse
+            return error.TestFailed;
+
+        switch (first.*) {
+            .pre => |ap| {
+                const ep = fd.pre.*.pre;
+                try testing.expectEqualStrings(ep.tree_root, ap.tree_root);
+                try testing.expectEqualStrings(ep.relative_path, ap.relative_path);
+                try testing.expectEqual(ep.file_number_total, ap.file_number_total);
+                try testing.expectEqual(ep.size_total_bytes, ap.size_total_bytes);
+                try testing.expectEqual(expected_file_number, ap.file_number_processed);
+                try testing.expectEqual(expected_size_processed, ap.size_processed_bytes);
+            },
+            else => return error.TestFailed,
+        }
+        i += 1;
+
+        if (i < actual.len) {
+            switch (actual[i].*) {
+                .during => |ad| {
+                    const ed = (fd.during orelse return error.TestFailed).*.during;
+                    try testing.expectEqual(ed.bytes_read, ad.bytes_read);
+                    try testing.expectEqual(ed.bytes_total, ad.bytes_total);
+                    i += 1;
+                },
+                else => {},
+            }
+        }
+
+        switch (actual[i].*) {
+            .post => |ap| {
+                const ep = fd.post.*.post;
+                try testing.expectEqual(ep.result, ap.result);
+                try testing.expectEqualStrings(ep.progress.tree_root, ap.progress.tree_root);
+                try testing.expectEqualStrings(ep.progress.relative_path, ap.progress.relative_path);
+                try testing.expectEqual(ep.progress.file_number_total, ap.progress.file_number_total);
+                try testing.expectEqual(ep.progress.size_total_bytes, ap.progress.size_total_bytes);
+                try testing.expectEqual(expected_file_number + 1, ap.progress.file_number_processed);
+                try testing.expectEqual(expected_size_processed + fd.stored_size, ap.progress.size_processed_bytes);
+            },
+            else => return error.TestFailed,
+        }
+        i += 1;
+
+        expected_file_number += 1;
+        expected_size_processed += fd.stored_size;
+    }
+}
