@@ -8,7 +8,6 @@ pub const store = @import("store.zig");
 // TODO:
 // - incremental
 // - build most current
-// - verify file/collection
 
 // TODO: testing robustness path (ordering etc.)
 //       also windows compat of tests

@@ -204,7 +204,7 @@ fn deepEql(a: anytype, b: @TypeOf(a)) bool {
     }
 }
 
-pub fn exepectEqualCollection(
+pub fn expectEqualCollection(
     expected: Collection,
     actual: Collection,
 ) !void {

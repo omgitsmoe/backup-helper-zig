@@ -7,6 +7,9 @@ const file = @import("file.zig");
 const prog = @import("progress.zig");
 const hash = @import("hash.zig");
 const builtin = @import("builtin");
+const PathStore = @import("store.zig");
+const parse = @import("parser.zig").parse;
+const parseSingle = @import("parser_single.zig").parse;
 
 pub const Collection = struct {
     root_path: []const u8,
@@ -46,27 +49,30 @@ pub const Collection = struct {
         WouldClobber,
         OutOfMemory,
         MissingHash,
-    } || prog.CallbackError;
+        MissingExtension,
+        MergeRootsIncompatible,
+    } || prog.CallbackError || hash.HashType.Error;
 
     /// Collection does not take ownership of `path`
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) Error!Collection {
-        if (!std_path.isAbsolute(path)) {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        root_path: []const u8,
+        name: []const u8,
+    ) Error!Collection {
+        if (!std_path.isAbsolute(root_path)) {
             return Error.PathNotAbsolute;
         }
 
         const normalized = try std_path.resolve(allocator, &[_][]const u8{
-            path,
+            root_path,
         });
         defer allocator.free(normalized);
 
-        const name = std_path.basename(normalized);
-        // if path is absolute, then dirname will always succeed
-        const dirpath = std_path.dirname(normalized) orelse unreachable;
         var arena = try allocator.create(std.heap.ArenaAllocator);
         arena.* = .init(allocator);
         const alloc = arena.allocator();
         return .{
-            .root_path = try alloc.dupe(u8, dirpath),
+            .root_path = try alloc.dupe(u8, normalized),
             .name = try alloc.dupe(u8, name),
             .arena = arena,
             .path_to_file = .init(alloc),
@@ -79,6 +85,48 @@ pub const Collection = struct {
         const child_allocator = self.arena.child_allocator;
         self.arena.deinit();
         child_allocator.destroy(self.arena);
+    }
+
+    pub fn fromDisk(
+        io: Io,
+        allocator: std.mem.Allocator,
+        store: *PathStore,
+        path: []const u8,
+    ) Error!Collection {
+        if (!std_path.isAbsolute(path)) {
+            return Error.PathNotAbsolute;
+        }
+
+        const root_path = std_path.dirname(path);
+        const name = std_path.basename(path);
+        const ext = std_path.extension(name);
+        if (ext.len == 0) {
+            return Error.MissingExtension;
+        }
+
+        var buf: [65536]u8 = undefined;
+        const open_file = try Io.Dir.openFileAbsolute(io, path, .{
+            .allow_directory = false,
+            .follow_symlinks = true,
+        });
+        defer open_file.close();
+
+        const reader = open_file.reader(io, &buf);
+
+        const ext_without_dot = ext[1..];
+        if (std.mem.eql(u8, ext_without_dot, "cshd")) {
+            return parse(allocator, store, &reader.interface, root_path, name);
+        }
+
+        const hash_type = try hash.HashType.from(ext_without_dot);
+        return parseSingle(
+            allocator,
+            store,
+            &reader.interface,
+            root_path,
+            name,
+            hash_type,
+        );
     }
 
     pub fn root(self: *@This()) []const u8 {
@@ -134,7 +182,7 @@ pub const Collection = struct {
         return .{ .map = &self.path_to_file, .keys = owned, .index = 0 };
     }
 
-    fn known_size_bytes(self: *const @This()) u64 {
+    fn knownSizeBytes(self: *const @This()) u64 {
         var iter = self.iterator();
         var bytes: u64 = 0;
         while (iter.next()) |entry| {
@@ -164,7 +212,7 @@ pub const Collection = struct {
         var file_number_processed: u64 = 0;
         const file_number_total: u64 = self.path_to_file.count();
         var size_processed_bytes: u64 = 0;
-        const size_total_bytes: u64 = self.known_size_bytes();
+        const size_total_bytes: u64 = self.knownSizeBytes();
 
         while (iter.next()) |kv| {
             const key = kv.key_ptr.*;
@@ -245,40 +293,94 @@ pub const Collection = struct {
             try self.verifyImpl(Iterator, &iter, io, include, progress, context);
         }
     }
+
+    fn ensureMergeRootsAreCompatible(self: *@This(), other: *const @This()) Error!void {
+        var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&buf);
+        const fba = fixed.allocator();
+        const to_other = try std_path.relative(
+            fba,
+            "",
+            null,
+            self.root_path,
+            other.root_path,
+        );
+
+        var iter = std_path.componentIterator(to_other);
+        while (iter.next()) |component| {
+            if (std.mem.eql(u8, component.name, "..")) {
+                return Error.MergeRootsIncompatible;
+            }
+        }
+    }
+
+    /// Merges all entries in `other` into `self`. If there are conflicts:
+    /// Keep the data from the __collection__ with the more recent mtime.
+    /// An mtime of null is always considered older.
+    /// If both mtimes are null then our entries are preferred.
+    pub fn merge(self: *@This(), other: *@This()) Error!void {
+        try self.ensureMergeRootsAreCompatible(other);
+
+        const keep_ours = if (self.mtime) |our_mtime| blk: {
+            break :blk if (other.mtime) |other_mtime|
+                our_mtime.durationTo(other_mtime).nanoseconds <= 0
+            else
+                true;
+        } else blk: {
+            break :blk if (other.mtime) |_| false else true;
+        };
+
+        var iter = other.iterator();
+        const alloc = self.arena.allocator();
+        while (iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const has_key = self.getPtr(key) != null;
+
+            if (has_key and keep_ours) {
+                continue;
+            }
+
+            const cloned = try entry.value_ptr.clone(alloc);
+            try self.put(cloned);
+        }
+    }
 };
 
 test "Collection.init does not borrow path" {
     const expected_root = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
     const expected_name = "bar";
-    const path = try std_path.join(testing.allocator, &[_][]const u8{
-        expected_root,
-        expected_name,
-    });
-    defer testing.allocator.free(path);
 
-    var collection = try Collection.init(testing.allocator, path);
+    var root = try testing.allocator.dupe(u8, expected_root);
+    defer testing.allocator.free(root);
+    var name = try testing.allocator.dupe(u8, expected_name);
+    defer testing.allocator.free(name);
+
+    var collection = try Collection.init(testing.allocator, root, name);
     defer collection.deinit();
 
-    path[3] = 'x';
-    path[7] = 'y';
+    root[3] = 'x';
+    name[1] = 'y';
 
     try testing.expectEqualStrings(expected_root, collection.root_path);
     try testing.expectEqualStrings(expected_name, collection.name);
 }
 
 test "Collection.init relative path error" {
-    const buf = [_]u8{ 'f', 'o', 'o', std_path.sep, 'b', 'a', 'r' };
-    const collection = Collection.init(testing.allocator, &buf);
+    const root = "foo";
+    const name = "bar";
+    const collection = Collection.init(testing.allocator, root, name);
 
     try testing.expectError(Collection.Error.PathNotAbsolute, collection);
 }
 
 test "Collection.put" {
-    const path = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
+    const root = if (builtin.target.os.tag == .windows) "C:\\" else "/";
+    const name = "foo";
 
-    var collection = try Collection.init(testing.allocator, path);
+    var collection = try Collection.init(testing.allocator, root, name);
     defer collection.deinit();
 
+    const path = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
     const expected = file.File{
         .path = path,
         .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
@@ -294,11 +396,13 @@ test "Collection.put" {
 }
 
 test "Collection.putNoClobber" {
-    const path = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
+    const root = if (builtin.target.os.tag == .windows) "C:\\" else "/";
+    const name = "foo";
 
-    var collection = try Collection.init(testing.allocator, path);
+    var collection = try Collection.init(testing.allocator, root, name);
     defer collection.deinit();
 
+    const path = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
     const expected = file.File{
         .path = path,
         .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
@@ -316,12 +420,13 @@ test "Collection.putNoClobber" {
 }
 
 test "Collection normalizes path" {
-    const path = if (builtin.target.os.tag == .windows)
-        "C:\\foo/bar/..\\./file.cshd"
+    const root = if (builtin.target.os.tag == .windows)
+        "C:\\foo/bar/..\\./"
     else
-        "/foo/bar/../././file.cshd";
+        "/foo/bar/../././";
+    const name = "file.cshd";
 
-    var collection = try Collection.init(testing.allocator, path);
+    var collection = try Collection.init(testing.allocator, root, name);
     defer collection.deinit();
 
     const expected = if (builtin.target.os.tag == .windows) "C:\\foo" else "/foo";
@@ -334,13 +439,7 @@ test "Collection verify" {
     var tmp = helpers.tmpDirWithPath(.{});
     defer tmp.cleanup();
 
-    const collection_path = try std_path.join(testing.allocator, &[_][]const u8{
-        tmp.absolute_path,
-        "foo.cshd",
-    });
-    defer testing.allocator.free(collection_path);
-
-    var collection = try Collection.init(testing.allocator, collection_path);
+    var collection = try Collection.init(testing.allocator, tmp.absolute_path, "foo");
     defer collection.deinit();
 
     const test_files = &[_]helpers.TestFile{
@@ -506,13 +605,7 @@ test "Collection verify respects include" {
     var tmp = helpers.tmpDirWithPath(.{});
     defer tmp.cleanup();
 
-    const collection_path = try std_path.join(testing.allocator, &[_][]const u8{
-        tmp.absolute_path,
-        "foo.cshd",
-    });
-    defer testing.allocator.free(collection_path);
-
-    var collection = try Collection.init(testing.allocator, collection_path);
+    var collection = try Collection.init(testing.allocator, tmp.absolute_path, "foo");
     defer collection.deinit();
 
     const test_files = &[_]helpers.TestFile{
@@ -629,4 +722,544 @@ test "Collection verify respects include" {
         expected_callbacks,
         capture.captures.items,
     );
+}
+
+test "Collection merge" {
+    const helpers = @import("test_helpers.zig");
+
+    const abs_root = comptime helpers.dummyAbsolutePathDir();
+
+    var tests = [_]struct {
+        name: []const u8,
+        expected_error: ?Collection.Error,
+        self: Collection,
+        self_files: []const file.File,
+        self_mtime: ?Io.Timestamp,
+        other: Collection,
+        other_mtime: ?Io.Timestamp,
+        other_files: []const file.File,
+        expected: Collection,
+        expected_mtime: ?Io.Timestamp,
+        expected_files: []const file.File,
+    }{
+        .{
+            .name = "roots incompatible",
+            .expected_error = Collection.Error.MergeRootsIncompatible,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = null,
+            .self_files = &.{},
+            .other = try .init(
+                testing.allocator,
+                comptime helpers.dummyAbsolutePathRoot(),
+                "other.cshd",
+            ),
+            .other_mtime = null,
+            .other_files = &.{},
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = null,
+            .expected_files = &.{},
+        },
+        .{
+            .name = "both mtimes zero: keep ours",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = null,
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = null,
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = null,
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+        .{
+            .name = "other zero mtime: keep ours",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = null,
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+        .{
+            .name = "other older: keep ours",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(99)),
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+        .{
+            .name = "same mtime: keep ours",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+        .{
+            .name = "self zero mtime: keep other",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = null,
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = null,
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+        .{
+            .name = "self older: keep other",
+            .expected_error = null,
+            .self = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .self_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(99)),
+            .self_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(1337)),
+                    .size = 42069,
+                    .hash_type = .md5,
+                    .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+            },
+            .other = try .init(
+                testing.allocator,
+                abs_root,
+                "other.cshd",
+            ),
+            .other_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(100)),
+            .other_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+            .expected = try .init(
+                testing.allocator,
+                abs_root,
+                "self.cshd",
+            ),
+            .expected_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(99)),
+            .expected_files = &[_]file.File{
+                .{
+                    .path = abs_root ++ "/conflict.txt",
+                    .mtime = null,
+                    .size = null,
+                    .hash_type = .sha3_512,
+                    .hash_bytes = &.{},
+                },
+                .{
+                    .path = abs_root ++ "/ours/bar.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345)),
+                    .size = 5678,
+                    .hash_type = .sha512,
+                    .hash_bytes = &[_]u8{ 0xab, 0xab, 0xab, 0xab },
+                },
+                .{
+                    .path = abs_root ++ "/other/xer.txt",
+                    .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(898989)),
+                    .size = 3344,
+                    .hash_type = .sha3_256,
+                    .hash_bytes = &[_]u8{ 0xaa, 0xaa, 0xaa, 0xaa },
+                },
+            },
+        },
+    };
+
+    for (&tests) |*tt| {
+        for (tt.self_files) |f| {
+            try tt.self.putNoClobber(f);
+        }
+        tt.self.mtime = tt.self_mtime;
+        for (tt.other_files) |f| {
+            try tt.other.putNoClobber(f);
+        }
+        tt.other.mtime = tt.other_mtime;
+        for (tt.expected_files) |f| {
+            try tt.expected.putNoClobber(f);
+        }
+        tt.expected.mtime = tt.expected_mtime;
+        defer {
+            tt.self.deinit();
+            tt.other.deinit();
+            tt.expected.deinit();
+        }
+
+        const actual_err = tt.self.merge(&tt.other);
+
+        if (tt.expected_error) |err| {
+            try testing.expectError(err, actual_err);
+            continue;
+        }
+
+        try helpers.expectEqualCollection(
+            tt.expected,
+            tt.self,
+        );
+    }
 }

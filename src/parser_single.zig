@@ -17,10 +17,11 @@ pub fn parse(
     allocator: std.mem.Allocator,
     store: *PathStore,
     reader: *Io.Reader,
-    collection_path: []const u8,
+    collection_root: []const u8,
+    collection_name: []const u8,
     hash_type: HashType,
 ) Error!Collection {
-    var collection = try Collection.init(allocator, collection_path);
+    var collection = try Collection.init(allocator, collection_root, collection_name);
     const alloc = collection.arena.allocator();
     errdefer collection.deinit();
     while (try reader.takeDelimiter('\n')) |line| {
@@ -114,7 +115,7 @@ test "single" {
     const expected = Collection{
         .mtime = null,
         .root_path = collection_root,
-        .name = "baz.cshd",
+        .name = "baz.md5",
         .path_to_file = expected_path_to_file,
         .arena = undefined,
     };
@@ -128,13 +129,12 @@ test "single" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection, .md5);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.md5", .md5);
     defer actual.deinit();
-    try helpers.exepectEqualCollection(expected, actual);
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "single empty" {
@@ -158,7 +158,7 @@ test "single empty" {
     const expected = Collection{
         .mtime = null,
         .root_path = collection_root,
-        .name = "baz.cshd",
+        .name = "baz.md5",
         .path_to_file = expected_path_to_file,
         .arena = undefined,
     };
@@ -172,13 +172,12 @@ test "single empty" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection, .md5);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.md5", .md5);
     defer actual.deinit();
-    try helpers.exepectEqualCollection(expected, actual);
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "parse errors" {
@@ -209,7 +208,6 @@ test "parse errors" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
@@ -221,7 +219,7 @@ test "parse errors" {
 
         var reader = Io.Reader.fixed(tt.input);
 
-        const err = parse(testing.allocator, &store, &reader, path_collection, .md5);
+        const err = parse(testing.allocator, &store, &reader, path_collection, "baz.md5", .md5);
         try testing.expectError(tt.expected_error, err);
     }
 }

@@ -23,11 +23,12 @@ pub fn parse(
     allocator: std.mem.Allocator,
     store: *PathStore,
     reader: *Io.Reader,
-    collection_path: []const u8,
+    collection_root: []const u8,
+    collection_name: []const u8,
 ) Error!ParseResult {
     var seen_header = false;
     var version: u32 = 0;
-    var collection = try Collection.init(allocator, collection_path);
+    var collection = try Collection.init(allocator, collection_root, collection_name);
     const alloc = collection.arena.allocator();
     errdefer collection.deinit();
     while (try reader.takeDelimiter('\n')) |line| {
@@ -257,13 +258,12 @@ test "version 1: full" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
     defer actual.result.deinit();
-    try helpers.exepectEqualCollection(expected, actual.result);
+    try helpers.expectEqualCollection(expected, actual.result);
 }
 
 test "version 1: optional fields missing" {
@@ -321,13 +321,12 @@ test "version 1: optional fields missing" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
     defer actual.result.deinit();
-    try helpers.exepectEqualCollection(expected, actual.result);
+    try helpers.expectEqualCollection(expected, actual.result);
 }
 
 test "version 0: full" {
@@ -386,13 +385,12 @@ test "version 0: full" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
     defer actual.result.deinit();
-    try helpers.exepectEqualCollection(expected, actual.result);
+    try helpers.expectEqualCollection(expected, actual.result);
 }
 
 test "version 0: optional fields missing" {
@@ -449,13 +447,12 @@ test "version 0: optional fields missing" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
     defer actual.result.deinit();
-    try helpers.exepectEqualCollection(expected, actual.result);
+    try helpers.expectEqualCollection(expected, actual.result);
 }
 
 test "empty" {
@@ -493,13 +490,12 @@ test "empty" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
-    var actual = try parse(testing.allocator, &store, &reader, path_collection);
+    var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
     defer actual.result.deinit();
-    try helpers.exepectEqualCollection(expected, actual.result);
+    try helpers.expectEqualCollection(expected, actual.result);
 }
 
 test "parse errors" {
@@ -590,7 +586,6 @@ test "parse errors" {
         abs,
         "xer",
         "baz",
-        "baz.cshd",
     });
     defer testing.allocator.free(path_collection);
 
@@ -602,7 +597,7 @@ test "parse errors" {
 
         var reader = Io.Reader.fixed(tt.input);
 
-        const err = parse(testing.allocator, &store, &reader, path_collection);
+        const err = parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
         try testing.expectError(tt.expected_error, err);
     }
 }

@@ -137,6 +137,16 @@ pub const File = struct {
         }
     }
 
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) std.mem.Allocator.Error!@This() {
+        return .{
+            .path = try allocator.dupe(u8, self.path),
+            .mtime = self.mtime,
+            .size = self.size,
+            .hash_type = self.hash_type,
+            .hash_bytes = try allocator.dupe(u8, self.hash_bytes),
+        };
+    }
+
     pub fn verify(
         self: *@This(),
         io: Io,
@@ -538,4 +548,25 @@ test "verify" {
             try testing.expectEqual(0, capture.captures.items.len);
         }
     }
+}
+
+test "clone" {
+    const file = File{
+        .path = "foo",
+        .mtime = Io.Timestamp.zero,
+        .size = 1337,
+        .hash_type = .md5,
+        .hash_bytes = &[_]u8{ 0xbe, 0xef },
+    };
+
+    const cloned = try file.clone(testing.allocator);
+    defer {
+        testing.allocator.free(cloned.path);
+        testing.allocator.free(cloned.hash_bytes);
+    }
+
+    try testing.expect(file.path.ptr != cloned.path.ptr);
+    try testing.expect(file.hash_bytes.ptr != cloned.hash_bytes.ptr);
+    try testing.expectEqualStrings(file.path, cloned.path);
+    try testing.expectEqualSlices(u8, file.hash_bytes, cloned.hash_bytes);
 }
