@@ -7,7 +7,6 @@ pub const store = @import("store.zig");
 
 // TODO:
 // - incremental
-// - build most current
 
 // TODO: testing robustness path (ordering etc.)
 //       also windows compat of tests
@@ -46,4 +45,8 @@ test "serializer" {
 
 test "matcher" {
     _ = @import("matcher.zig");
+}
+
+test "most_current" {
+    _ = @import("most_current.zig");
 }

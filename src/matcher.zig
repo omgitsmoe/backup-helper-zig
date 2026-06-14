@@ -137,3 +137,38 @@ test "empty matcher matches everything" {
     try testing.expect(matcher.isMatch("foo/xer/abc.zig"));
     try testing.expect(matcher.isMatch("xer/file.txt"));
 }
+
+test "PathMatcher.deinit works with copy" {
+    const foo = &[_]struct {
+        matcher: PathMatcher,
+    }{
+        .{
+            .matcher = blk: {
+                var builder = PathMatcherBuilder.init(testing.allocator);
+                try builder.allow("foo/**/*.zig");
+                try builder.allow("**/*.txt");
+                try builder.block("bar/**/*");
+                try builder.block("**/*.go");
+                try builder.block("foo/bar/*.zig");
+
+                const matcher = try builder.build();
+                break :blk matcher;
+            },
+        },
+    };
+
+    for (foo) |tt| {
+        var copy = @constCast(&tt.matcher);
+        defer copy.deinit(testing.allocator);
+
+        try testing.expect(copy.isBlocked("bar/foo/xer.zig"));
+        try testing.expect(copy.isBlocked("bar/xer.bin"));
+        try testing.expect(copy.isBlocked("foo.go"));
+        try testing.expect(copy.isBlocked("xer/foo.go"));
+        try testing.expect(copy.isBlocked("foo/bar/abc.zig"));
+        try testing.expect(!copy.isMatch("foo/bar/abc.zig"));
+
+        try testing.expect(copy.isMatch("foo/xer/abc.zig"));
+        try testing.expect(copy.isMatch("xer/file.txt"));
+    }
+}

@@ -6,10 +6,6 @@ const PathStore = @import("store.zig").PathStore;
 const File = @import("file.zig").File;
 const HashType = @import("hash.zig").HashType;
 
-pub const ParseResult = struct {
-    result: Collection,
-};
-
 pub const Error = error{
     MalformedHeader,
     Malformed,
@@ -25,7 +21,7 @@ pub fn parse(
     reader: *Io.Reader,
     collection_root: []const u8,
     collection_name: []const u8,
-) Error!ParseResult {
+) Error!Collection {
     var seen_header = false;
     var version: u32 = 0;
     var collection = try Collection.init(allocator, collection_root, collection_name);
@@ -53,9 +49,7 @@ pub fn parse(
         try collection.putNoClobber(file);
     }
 
-    return .{
-        .result = collection,
-    };
+    return collection;
 }
 
 fn parseHeader(input: []const u8) Error!u32 {
@@ -262,8 +256,8 @@ test "version 1: full" {
     defer testing.allocator.free(path_collection);
 
     var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
-    defer actual.result.deinit();
-    try helpers.expectEqualCollection(expected, actual.result);
+    defer actual.deinit();
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "version 1: optional fields missing" {
@@ -325,8 +319,8 @@ test "version 1: optional fields missing" {
     defer testing.allocator.free(path_collection);
 
     var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
-    defer actual.result.deinit();
-    try helpers.expectEqualCollection(expected, actual.result);
+    defer actual.deinit();
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "version 0: full" {
@@ -389,8 +383,8 @@ test "version 0: full" {
     defer testing.allocator.free(path_collection);
 
     var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
-    defer actual.result.deinit();
-    try helpers.expectEqualCollection(expected, actual.result);
+    defer actual.deinit();
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "version 0: optional fields missing" {
@@ -451,8 +445,8 @@ test "version 0: optional fields missing" {
     defer testing.allocator.free(path_collection);
 
     var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
-    defer actual.result.deinit();
-    try helpers.expectEqualCollection(expected, actual.result);
+    defer actual.deinit();
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "empty" {
@@ -494,8 +488,8 @@ test "empty" {
     defer testing.allocator.free(path_collection);
 
     var actual = try parse(testing.allocator, &store, &reader, path_collection, "baz.cshd");
-    defer actual.result.deinit();
-    try helpers.expectEqualCollection(expected, actual.result);
+    defer actual.deinit();
+    try helpers.expectEqualCollection(expected, actual);
 }
 
 test "parse errors" {

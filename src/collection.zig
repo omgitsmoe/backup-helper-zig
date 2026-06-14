@@ -7,9 +7,11 @@ const file = @import("file.zig");
 const prog = @import("progress.zig");
 const hash = @import("hash.zig");
 const builtin = @import("builtin");
-const PathStore = @import("store.zig");
+const PathStore = @import("store.zig").PathStore;
 const parse = @import("parser.zig").parse;
+const ParseError = @import("parser.zig").Error;
 const parseSingle = @import("parser_single.zig").parse;
+const ParseSingleError = @import("parser_single.zig").Error;
 
 pub const Collection = struct {
     root_path: []const u8,
@@ -92,12 +94,13 @@ pub const Collection = struct {
         allocator: std.mem.Allocator,
         store: *PathStore,
         path: []const u8,
-    ) Error!Collection {
+    ) (Error || Io.File.OpenError || Io.File.StatError || ParseError || ParseSingleError)!Collection {
         if (!std_path.isAbsolute(path)) {
             return Error.PathNotAbsolute;
         }
 
-        const root_path = std_path.dirname(path);
+        const root_path = std_path.dirname(path) orelse
+            @panic("bug: must have dirname if absolute path");
         const name = std_path.basename(path);
         const ext = std_path.extension(name);
         if (ext.len == 0) {
@@ -109,17 +112,21 @@ pub const Collection = struct {
             .allow_directory = false,
             .follow_symlinks = true,
         });
-        defer open_file.close();
+        defer open_file.close(io);
 
-        const reader = open_file.reader(io, &buf);
+        const st = try open_file.stat(io);
+
+        var reader = open_file.reader(io, &buf);
 
         const ext_without_dot = ext[1..];
         if (std.mem.eql(u8, ext_without_dot, "cshd")) {
-            return parse(allocator, store, &reader.interface, root_path, name);
+            var result = try parse(allocator, store, &reader.interface, root_path, name);
+            result.mtime = st.mtime;
+            return result;
         }
 
         const hash_type = try hash.HashType.from(ext_without_dot);
-        return parseSingle(
+        var result = try parseSingle(
             allocator,
             store,
             &reader.interface,
@@ -127,6 +134,8 @@ pub const Collection = struct {
             name,
             hash_type,
         );
+        result.mtime = st.mtime;
+        return result;
     }
 
     pub fn root(self: *@This()) []const u8 {
@@ -160,6 +169,10 @@ pub const Collection = struct {
 
     pub fn getPtr(self: *@This(), path: []const u8) ?*file.File {
         return self.path_to_file.getPtr(path);
+    }
+
+    pub fn count(self: *const @This()) u32 {
+        return self.path_to_file.count();
     }
 
     pub fn iterator(self: *const @This()) Iterator {
@@ -294,7 +307,7 @@ pub const Collection = struct {
         }
     }
 
-    fn ensureMergeRootsAreCompatible(self: *@This(), other: *const @This()) Error!void {
+    fn ensureMergeRootsAreCompatible(self: *@This(), other: @This()) Error!void {
         var buf: [Io.Dir.max_path_bytes]u8 = undefined;
         var fixed = std.heap.FixedBufferAllocator.init(&buf);
         const fba = fixed.allocator();
@@ -318,7 +331,7 @@ pub const Collection = struct {
     /// Keep the data from the __collection__ with the more recent mtime.
     /// An mtime of null is always considered older.
     /// If both mtimes are null then our entries are preferred.
-    pub fn merge(self: *@This(), other: *@This()) Error!void {
+    pub fn merge(self: *@This(), other: @This()) Error!void {
         try self.ensureMergeRootsAreCompatible(other);
 
         const keep_ours = if (self.mtime) |our_mtime| blk: {
@@ -342,6 +355,30 @@ pub const Collection = struct {
 
             const cloned = try entry.value_ptr.clone(alloc);
             try self.put(cloned);
+        }
+    }
+
+    pub fn filter_missing(self: *@This(), io: Io) (Io.Dir.StatFileError || error{OutOfMemory})!void {
+        var to_remove = std.ArrayList([]const u8).empty;
+        defer to_remove.deinit(self.arena.child_allocator);
+
+        var iter = self.iterator();
+        while (iter.next()) |entry| {
+            const path = entry.key_ptr.*;
+            _ = Io.Dir.cwd().statFile(
+                io,
+                path,
+                .{ .follow_symlinks = true },
+            ) catch |err| switch (err) {
+                Io.Dir.StatFileError.FileNotFound => {
+                    try to_remove.append(self.arena.child_allocator, path);
+                },
+                else => return err,
+            };
+        }
+
+        for (to_remove.items) |remove_path| {
+            _ = self.path_to_file.remove(remove_path);
         }
     }
 };
@@ -1250,7 +1287,7 @@ test "Collection merge" {
             tt.expected.deinit();
         }
 
-        const actual_err = tt.self.merge(&tt.other);
+        const actual_err = tt.self.merge(tt.other);
 
         if (tt.expected_error) |err| {
             try testing.expectError(err, actual_err);
@@ -1262,4 +1299,115 @@ test "Collection merge" {
             tt.self,
         );
     }
+}
+
+test "Collection filter_missing" {
+    const helpers = @import("test_helpers.zig");
+
+    var tmp = helpers.tmpDirWithPath(.{});
+    defer tmp.cleanup();
+
+    var collection = try Collection.init(testing.allocator, tmp.absolute_path, "foo");
+    defer collection.deinit();
+
+    const test_files = &[_]helpers.TestFile{
+        .{
+            .relativePath = "bar/xer/vid.mp4",
+            .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+            .content = "vid123",
+        },
+    };
+    try helpers.createTestFiles(testing.io, tmp.tmp.dir, test_files);
+
+    const absolute_paths = &[_][]const u8{
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            test_files[0].relativePath,
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            "foo/bar/file.txt",
+        }),
+        try std_path.join(testing.allocator, &[_][]const u8{
+            tmp.absolute_path,
+            "xer.bin",
+        }),
+    };
+    defer {
+        for (absolute_paths) |p| {
+            testing.allocator.free(p);
+        }
+    }
+
+    try collection.putNoClobber(.{
+        .path = absolute_paths[0],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(200)),
+        .size = 11111,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[1],
+        .mtime = null,
+        .size = null,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{
+            0xfc, 0x3f, 0xf9, 0x8e, 0x8c, 0x6a, 0x0d, 0x30, 0x87, 0xd5,
+            0x15, 0xc0, 0x47, 0x3f, 0x86, 0x77,
+        },
+    });
+    try collection.putNoClobber(.{
+        .path = absolute_paths[2],
+        .mtime = Io.Timestamp.zero.addDuration(.fromSeconds(300)),
+        .size = 11,
+        .hash_type = hash.HashType.md5,
+        .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    });
+
+    try collection.filter_missing(testing.io);
+
+    try testing.expect(collection.getPtr(absolute_paths[0]) != null);
+    try testing.expect(collection.getPtr(absolute_paths[1]) == null);
+    try testing.expect(collection.getPtr(absolute_paths[2]) == null);
+}
+
+test "Collection.fromDisk sets mtime from file stat" {
+    const helpers = @import("test_helpers.zig");
+    var store = PathStore.init(testing.allocator, std.Io.Dir.max_path_bytes);
+    defer store.deinit();
+
+    var tmp = helpers.tmpDirWithPath(.{});
+    defer tmp.cleanup();
+
+    const expected_mtime = Io.Timestamp.zero.addDuration(.fromSeconds(12345));
+
+    const test_files = &[_]helpers.TestFile{
+        .{
+            .relativePath = "test.cshd",
+            .mtime = expected_mtime,
+            .content =
+            \\# version 1
+            \\100.0,100,md5,deadbeef some/file.txt
+            \\
+            ,
+        },
+    };
+    try helpers.createTestFiles(testing.io, tmp.tmp.dir, test_files);
+
+    const hash_file_path = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        tmp.absolute_path,
+        "test.cshd",
+    });
+    defer testing.allocator.free(hash_file_path);
+
+    var collection = try Collection.fromDisk(
+        testing.io,
+        testing.allocator,
+        &store,
+        hash_file_path,
+    );
+    defer collection.deinit();
+
+    try testing.expect(collection.mtime != null);
+    try testing.expectEqual(expected_mtime, collection.mtime.?);
 }

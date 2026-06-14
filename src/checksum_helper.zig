@@ -1,5 +1,6 @@
+const std = @import("std");
 const HashType = @import("hash.zig").HashType;
-const Io = @import("std").Io;
+const Io = std.Io;
 
 const PathMatcher = @import("matcher.zig").PathMatcher;
 
@@ -43,3 +44,31 @@ pub const Options = struct {
     /// for files that don't have checksums in `check_missing`, etc.
     all_files_matcher: PathMatcher,
 };
+
+pub fn defaultHashFileName(
+    io: Io,
+    allocator: std.mem.Allocator,
+    directory: []const u8,
+    default: []const u8,
+    infix: []const u8,
+) (std.mem.Allocator.Error || Io.Writer.Error)![]u8 {
+    const dirname = std.fs.path.basename(directory);
+    const base = if (dirname.len == 0 or std.mem.eql(u8, dirname, "."))
+        default
+    else
+        dirname;
+
+    const now = Io.Timestamp.now(io, .real);
+
+    // YYYY-MM-DDTHHMMSS
+    //                  ^ 18
+    const time_string_bytes_max = 20;
+    var buf: [Io.Dir.max_name_bytes + time_string_bytes_max]u8 = undefined;
+    var writer = Io.Writer.fixed(&buf);
+
+    try writer.print("{s}_{s}", .{ base, infix });
+    try now.formatNumber(&writer, .{});
+
+    const dupe = allocator.dupe(u8, writer.buffered());
+    return dupe;
+}

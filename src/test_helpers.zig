@@ -313,3 +313,66 @@ pub fn CallbackCapture(comptime T: type) type {
         }
     };
 }
+
+pub fn sortSerialized(
+    allocator: std.mem.Allocator,
+    serialized: []const u8,
+) ![]const u8 {
+    var header = std.ArrayList([]const u8).empty;
+    defer header.deinit(allocator);
+
+    const LineAndKey = struct {
+        line: []const u8,
+        key: []const u8,
+    };
+    var lines = std.ArrayList(LineAndKey).empty;
+    defer lines.deinit(allocator);
+
+    var it = std.mem.tokenizeScalar(u8, serialized, '\n');
+
+    var in_header = true;
+
+    while (it.next()) |line| {
+        const is_comment = line.len > 0 and line[0] == '#';
+
+        if (in_header) {
+            if (!is_comment) {
+                in_header = false;
+            } else {
+                try header.append(allocator, line);
+            }
+        }
+
+        if (!is_comment) {
+            if (std.mem.indexOfScalar(u8, line, ' ')) |idx| {
+                try lines.append(allocator, .{
+                    .line = line,
+                    .key = line[idx + 1 ..],
+                });
+            }
+        }
+    }
+
+    std.sort.insertion(LineAndKey, lines.items, {}, struct {
+        fn lessThan(_: void, a: LineAndKey, b: LineAndKey) bool {
+            return std.mem.order(u8, a.key, b.key) == .lt;
+        }
+    }.lessThan);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    // header
+    for (header.items) |h| {
+        try out.appendSlice(allocator, h);
+        try out.append(allocator, '\n');
+    }
+
+    // body
+    for (lines.items) |l| {
+        try out.appendSlice(allocator, l.line);
+        try out.append(allocator, '\n');
+    }
+
+    return try out.toOwnedSlice(allocator);
+}

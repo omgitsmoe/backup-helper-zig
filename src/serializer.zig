@@ -21,6 +21,10 @@ pub const Serializer = struct {
     }
 
     pub fn flush(self: *@This()) !void {
+        if (self.collection.count() == 0) {
+            return;
+        }
+
         if (!self.header_written) {
             try self.write_header();
         }
@@ -154,8 +158,46 @@ test "Serializer only writes header once" {
     const helpers = @import("test_helpers.zig");
     const expected =
         \\# version 1
+        \\,,md5,deadbeef foo/bar
+        \\,,md5,deadbeef foo/bar
         \\
     ;
+
+    var input = try Collection.init(
+        testing.allocator,
+        helpers.dummyAbsolutePathDir(),
+        "baz.cshd",
+    );
+    defer input.deinit();
+    try input.putNoClobber(
+        .{
+            .path = comptime helpers.dummyAbsolutePathDir() ++ "/foo/bar",
+            .mtime = null,
+            .size = null,
+            .hash_bytes = &.{ 0xde, 0xad, 0xbe, 0xef },
+            .hash_type = .md5,
+        },
+    );
+
+    const path_collection = try std.fs.path.join(testing.allocator, &[_][]const u8{
+        input.root_path,
+        "baz.cshd",
+    });
+    defer testing.allocator.free(path_collection);
+
+    var w = Io.Writer.Allocating.init(testing.allocator);
+    defer w.deinit();
+
+    var ser = Serializer.init(&w.writer, &input);
+    try ser.flush();
+    try ser.flush();
+
+    try testing.expectEqualStrings(expected, w.written());
+}
+
+test "Serializer skips writing if empty" {
+    const helpers = @import("test_helpers.zig");
+    const expected = "";
 
     var input_path_to_file = std.StringHashMap(File).init(testing.allocator);
     defer input_path_to_file.deinit();
