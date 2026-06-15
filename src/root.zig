@@ -8,8 +8,9 @@ pub const store = @import("store.zig");
 // TODO:
 // - incremental
 
-// TODO: testing robustness path (ordering etc.)
+// TODO: testing robustness pass (ordering etc.)
 //       also windows compat of tests
+//       + check if *const parameters are enough
 
 test "discover" {
     _ = @import("discover.zig");

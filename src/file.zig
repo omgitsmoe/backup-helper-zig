@@ -63,6 +63,17 @@ pub const File = struct {
         self.size = st.size;
     }
 
+    pub fn mtimeEqual(a: Io.Timestamp, b: Io.Timestamp) bool {
+        const diff_ms = @abs(
+            a.durationTo(b).toMilliseconds(),
+        );
+        if (diff_ms <= File.mtime_timestamp_epsilon_ms) {
+            return true;
+        }
+
+        return false;
+    }
+
     const hashFileCbContext = struct {
         bytes_total: u64,
         progress: ?prog.HashProgressFn,
@@ -181,10 +192,7 @@ pub const File = struct {
         if (self.mtime) |recorded_mtime| {
             const on_disk_mtime = stat.mtime;
 
-            const diff_ms = @abs(
-                recorded_mtime.durationTo(on_disk_mtime).toMilliseconds(),
-            );
-            if (diff_ms <= File.mtime_timestamp_epsilon_ms) {
+            if (self.mtimeEqual(recorded_mtime, on_disk_mtime)) {
                 error_on_mismatch = .mismatch_corrupted;
             } else {
                 error_on_mismatch = .mismatch_outdated_hash;
