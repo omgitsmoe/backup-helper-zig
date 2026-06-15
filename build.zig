@@ -147,6 +147,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    const run_cover = b.addSystemCommand(&.{
+        "kcov",
+        "--clean",
+        "--include-path=src/",
+        b.pathJoin(&.{ b.install_path, "cover" }),
+    });
+    run_cover.addArtifactArg(mod_tests);
+    const cover_step = b.step("cover", "Generate test coverage report");
+    cover_step.dependOn(&run_cover.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
