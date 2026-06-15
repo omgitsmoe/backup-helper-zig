@@ -116,7 +116,7 @@ pub const File = struct {
     }
 
     pub fn hash_from_disk(
-        self: *@This(),
+        self: @This(),
         io: Io,
         allocator: std.mem.Allocator,
         file: Io.File,

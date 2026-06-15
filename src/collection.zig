@@ -163,7 +163,7 @@ pub const Collection = struct {
         try self.path_to_file.put(to_add.path, to_add);
     }
 
-    pub fn get(self: *@This(), path: []const u8) ?file.File {
+    pub fn get(self: @This(), path: []const u8) ?file.File {
         return self.path_to_file.get(path);
     }
 

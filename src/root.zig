@@ -51,3 +51,7 @@ test "matcher" {
 test "most_current" {
     _ = @import("most_current.zig");
 }
+
+test "incremental" {
+    _ = @import("incremental.zig");
+}

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const std_path = std.fs.path;
+const testing = std.testing;
 
 const prog = @import("progress.zig");
 const Collection = @import("collection.zig").Collection;
@@ -44,7 +45,13 @@ pub const Incremental = struct {
     options: Options,
     files_to_checksum: [][]const u8,
 
-    pub const Error = error{} || std.mem.Allocator.Error;
+    pub const Error = error{} ||
+        std.mem.Allocator.Error ||
+        Io.Dir.StatFileError ||
+        Io.Writer.Error ||
+        Collection.Error ||
+        PathStore.Error ||
+        prog.CallbackError;
 
     pub fn init(
         io: Io,
@@ -61,6 +68,7 @@ pub const Incremental = struct {
             .store = store,
             .most_current = most_current,
             .options = options,
+            .files_to_checksum = &.{},
         };
     }
 
@@ -73,10 +81,11 @@ pub const Incremental = struct {
         progress: ?prog.IncrementalProgressFn,
         context: *anyopaque,
     ) Error!Collection {
-        self.files_to_checksum = try discoverFiles(self.io, self.allocator, self.store, .{
-            .matcher = self.options.all_files_matcher,
+        self.files_to_checksum = try discoverFiles(self.allocator, self.io, self.store, .{
+            .matcher = &self.options.all_files_matcher,
             .root = self.root,
         }, progress, context);
+        return self.checksumFiles(progress, context);
     }
 
     const MapCallback = struct {
@@ -101,7 +110,7 @@ pub const Incremental = struct {
         context: *anyopaque,
     ) Error!Collection {
         // TODO pull parts out into separate functions
-        const name = defaultHashFileName(
+        const name = try defaultHashFileName(
             self.io,
             self.allocator,
             self.root,
@@ -111,12 +120,12 @@ pub const Incremental = struct {
         var result = try Collection.init(self.allocator, self.root, name);
 
         var dir = try Io.Dir.openDirAbsolute(self.io, self.root, .{});
-        defer dir.close();
+        defer dir.close(self.io);
         var file = try dir.openFile(self.io, result.name, .{ .allow_directory = false });
-        defer file.close();
+        defer file.close(self.io);
 
         var buf: [65536]u8 = undefined;
-        var writer = file.writer(&buf);
+        var writer = file.writer(self.io, &buf);
 
         var last_flush = Io.Timestamp.now(self.io, .real);
         var serializer = Serializer.init(&writer.interface, &result);
@@ -128,7 +137,7 @@ pub const Incremental = struct {
         for (self.files_to_checksum) |file_path| {
             defer fixed.reset();
 
-            const relative_path = std_path.relative(fba, "", null, self.root, file_path);
+            const relative_path = try std_path.relative(fba, "", null, self.root, file_path);
             var on_disk = File{
                 .path = file_path,
                 .mtime = null,
@@ -137,12 +146,12 @@ pub const Incremental = struct {
                 .hash_bytes = &.{},
             };
 
-            const previous = self.most_current.getPtr(file_path);
+            const previous = self.most_current.get(file_path);
 
             if (progress) |progress_fn| {
-                progress_fn(.{
+                try progress_fn(.{
                     .pre_read = relative_path,
-                });
+                }, context);
             }
 
             const open_file = try Io.Dir.openFileAbsolute(
@@ -193,7 +202,8 @@ pub const Incremental = struct {
 
             var include = true;
             if (previous) |prev| {
-                include = self.compare_and_include(
+                include = try self.compare_and_include(
+                    open_file,
                     on_disk,
                     prev,
                     relative_path,
@@ -209,7 +219,7 @@ pub const Incremental = struct {
             }
 
             if (include) {
-                result.putNoClobber(on_disk);
+                try result.putNoClobber(on_disk);
 
                 if (self.options.periodic_write_interval) |write_interval| {
                     const now = Io.Timestamp.now(self.io, .real);
@@ -228,26 +238,8 @@ pub const Incremental = struct {
         }
 
         if (progress) |progress_fn| {
-            // notify about missing files
-            var iter = self.most_current.iterator();
-            while (iter.next()) |previous_entry| {
-                const found = result.getPtr(previous_entry.key_ptr.*) != null;
-                if (!found) {
-                    const relative_path = std_path.relative(
-                        fba,
-                        "",
-                        null,
-                        self.root,
-                        previous_entry.key_ptr.*,
-                    );
-
-                    try progress_fn(.{
-                        .file_removed = relative_path,
-                    }, context);
-                }
-            }
-
-            try progress_fn(.{.finished}, context);
+            try self.notify_missing(&fixed, result, progress_fn, context);
+            try progress_fn(prog.IncrementalProgress.finished, context);
         }
 
         return result;
@@ -256,17 +248,90 @@ pub const Incremental = struct {
     // TODO must include if previous mtime none
     fn compare_and_include(
         self: *Incremental,
+        open_file: Io.File,
         on_disk: File,
         previous: File,
         relative_path: []const u8,
         progress: ?prog.IncrementalProgressFn,
         context: *anyopaque,
-    ) bool {
-        _ = context; // autofix
-        _ = progress; // autofix
-        _ = relative_path; // autofix
-        _ = previous; // autofix
-        _ = on_disk; // autofix
-        _ = self; // autofix
+    ) Error!bool {
+        const is_match = if (on_disk.hash_type != previous.hash_type) blk: {
+            var mapper = MapCallback{
+                .inner = self,
+                .progress = progress,
+                .context = context,
+            };
+            const on_disk_hash = try on_disk.hash_from_disk(
+                self.io,
+                self.allocator,
+                open_file,
+                MapCallback.cb,
+                &mapper,
+            );
+
+            break :blk std.mem.eql(u8, on_disk_hash, previous.hash_bytes);
+        } else std.mem.eql(u8, on_disk.hash_bytes, previous.hash_bytes);
+
+        if (is_match) {
+            if (progress) |progress_fn| {
+                try progress_fn(.{ .file_match = relative_path }, context);
+            }
+            return self.options.include_unchanged_files;
+        }
+
+        if (progress) |progress_fn| {
+            if (previous.mtime == null or on_disk.mtime == null) {
+                try progress_fn(.{ .file_changed = relative_path }, context);
+                return true;
+            }
+
+            const prev_mtime = previous.mtime.?;
+            const on_disk_mtime = on_disk.mtime.?;
+            if (File.mtimeEqual(on_disk_mtime, prev_mtime)) {
+                try progress_fn(.{ .file_changed_corrupted = relative_path }, context);
+            } else {
+                const diff = on_disk_mtime.durationTo(prev_mtime);
+                if (diff.nanoseconds > 0) {
+                    try progress_fn(.{ .file_changed_older = relative_path }, context);
+                } else {
+                    try progress_fn(.{ .file_changed = relative_path }, context);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    fn notify_missing(
+        self: *Incremental,
+        fba: *std.heap.FixedBufferAllocator,
+        on_disk: Collection,
+        progress: prog.IncrementalProgressFn,
+        context: *anyopaque,
+    ) Error!void {
+        fba.reset();
+
+        const alloc = fba.allocator();
+        var iter = self.most_current.iterator();
+        while (iter.next()) |previous_entry| : (fba.reset()) {
+            const found = on_disk.get(previous_entry.key_ptr.*) != null;
+            if (!found) {
+                const relative_path = try std_path.relative(
+                    alloc,
+                    "",
+                    null,
+                    self.root,
+                    previous_entry.key_ptr.*,
+                );
+
+                try progress(.{
+                    .file_removed = relative_path,
+                }, context);
+            }
+        }
     }
 };
+
+test "Incremental" {
+    _ = testing.refAllDecls(Incremental);
+}

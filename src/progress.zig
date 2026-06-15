@@ -101,7 +101,7 @@ pub const IncrementalProgress = union(enum) {
     file_new: []const u8,
     /// The path is relative to the ChecksumHelper root.
     file_removed: []const u8,
-    finished,
+    finished: void,
 
     pub fn clone(self: @This(), allocator: std.mem.Allocator) error{OutOfMemory}!@This() {
         return switch (self) {
