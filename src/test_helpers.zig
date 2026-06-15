@@ -154,7 +154,7 @@ fn printValue(w: *std.Io.Writer, value: anytype) !void {
 }
 
 // eql that doesn't compare slice.ptr, just the contents
-fn deepEql(a: anytype, b: @TypeOf(a)) bool {
+pub fn deepEql(a: anytype, b: @TypeOf(a)) bool {
     const T = @TypeOf(a);
 
     switch (@typeInfo(T)) {
