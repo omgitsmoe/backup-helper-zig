@@ -308,7 +308,7 @@ pub fn discoverFiles(
     var fixed = std.heap.FixedBufferAllocator.init(&path_buf);
     const fba = fixed.allocator();
     // TODO how to handle permission errors etc?
-    while (try iter.next(io)) |entry| {
+    while (try iter.next(io)) |entry| : (fixed.reset()) {
         switch (entry.status) {
             .ok => {},
             .ignored_predicate, .ignored_special_file, .ignored_max_depth => {

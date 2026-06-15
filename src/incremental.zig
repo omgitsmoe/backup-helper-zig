@@ -126,6 +126,8 @@ pub const Incremental = struct {
         const fba = fixed.allocator();
 
         for (self.files_to_checksum) |file_path| {
+            defer fixed.reset();
+
             const relative_path = std_path.relative(fba, "", null, self.root, file_path);
             var on_disk = File{
                 .path = file_path,
@@ -181,7 +183,7 @@ pub const Incremental = struct {
                 .progress = progress,
                 .context = context,
             };
-            try on_disk.hash_from_disk(
+            on_disk.hash_bytes = try on_disk.hash_from_disk(
                 self.io,
                 self.allocator,
                 open_file,

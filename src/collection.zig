@@ -227,7 +227,7 @@ pub const Collection = struct {
         var size_processed_bytes: u64 = 0;
         const size_total_bytes: u64 = self.knownSizeBytes();
 
-        while (iter.next()) |kv| {
+        while (iter.next()) |kv| : (fixed.reset()) {
             const key = kv.key_ptr.*;
             const f_entry = kv.value_ptr;
             const relative_path = try std_path.relative(

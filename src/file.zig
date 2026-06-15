@@ -192,7 +192,7 @@ pub const File = struct {
         if (self.mtime) |recorded_mtime| {
             const on_disk_mtime = stat.mtime;
 
-            if (self.mtimeEqual(recorded_mtime, on_disk_mtime)) {
+            if (File.mtimeEqual(recorded_mtime, on_disk_mtime)) {
                 error_on_mismatch = .mismatch_corrupted;
             } else {
                 error_on_mismatch = .mismatch_outdated_hash;
