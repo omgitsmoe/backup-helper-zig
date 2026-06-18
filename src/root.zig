@@ -2,15 +2,14 @@
 const std = @import("std");
 const Io = std.Io;
 
-pub const discover = @import("discover.zig");
-pub const store = @import("store.zig");
-
-// TODO:
-// - incremental
+const checksum_helper = @import("checksum_helper.zig");
+pub const ChecksumHelper = checksum_helper.ChecksumHelper;
+pub const ChecksumHelperOptions = checksum_helper.Options;
+pub const ChecksumMissingResult = checksum_helper.CheckMissingResult;
 
 // TODO: testing robustness pass (ordering etc.)
 //       also windows compat of tests
-//       + check if *const parameters are enough
+//       + check if immutable parameters are enough
 
 test "discover" {
     _ = @import("discover.zig");

@@ -24,6 +24,11 @@ pub const VerifyProgressFn = *const fn (
     context: *anyopaque,
 ) CallbackError!void;
 
+pub const VerifyRootProgressFn = *const fn (
+    progress: *const VerifyProgress,
+    context: *anyopaque,
+) CallbackError!void;
+
 pub const HashProgressFn = *const fn (
     progress: HashProgress,
     context: *anyopaque,
@@ -220,6 +225,19 @@ pub const IncrementalProgress = union(enum) {
     }
 };
 
+const IncrementalProgressMapper = struct {
+    progress: ?IncrementalProgressFn,
+    context: *anyopaque,
+
+    pub fn cbMostCurrent(p: MostCurrentProgress, ctx: *anyopaque) CallbackError!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+
+        if (self.progress) |progress_fn| {
+            try progress_fn(p, self.context);
+        }
+    }
+};
+
 pub const HashProgress = struct {
     bytes_read: u64,
     bytes_total: u64,
@@ -276,5 +294,31 @@ pub const VerifyProgressPost = struct {
             .progress = try self.progress.clone(allocator),
             .result = self.result,
         };
+    }
+};
+
+pub const VerifyRootProgress = union(enum) {
+    most_current: MostCurrentProgress,
+    verify: VerifyProgress,
+};
+
+const VerifyRootMapper = struct {
+    progress: ?VerifyRootProgressFn,
+    context: *anyopaque,
+
+    pub fn cbMostCurrent(p: MostCurrentProgress, ctx: *anyopaque) CallbackError!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+
+        if (self.progress) |progress_fn| {
+            try progress_fn(p, self.context);
+        }
+    }
+
+    pub fn cbVerify(p: VerifyProgress, ctx: *anyopaque) CallbackError!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+
+        if (self.progress) |progress_fn| {
+            try progress_fn(p, self.context);
+        }
     }
 };
