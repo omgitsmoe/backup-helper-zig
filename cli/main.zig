@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const backup_helper_zig = @import("backup_helper_zig");
+const bh = @import("backup_helper_zig");
 const clap = @import("clap");
 const File = std.Io.File;
 
@@ -10,12 +10,21 @@ const SubCommands = enum {
     build,
     missing,
     fill,
-    @"move",
+    move,
     verify,
 };
 
+fn hashType(in: []const u8) bh.HashType.Error!bh.HashType {
+    return bh.HashType.from(in);
+}
+
 const main_parsers = .{
     .command = clap.parsers.enumeration(SubCommands),
+    .path = clap.parsers.string,
+    .glob = clap.parsers.string,
+    .hash_type = hashType,
+    .u64 = clap.parsers.int(u64, 10),
+    .u32 = clap.parsers.int(u32, 10),
 };
 
 const main_params = clap.parseParamsComptime(
@@ -38,54 +47,54 @@ const verify_parsers = .{
 
 const incremental_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
-    \\<str>                                              Root directory for checksum generation
-    \\--hash-type <str>                                  Which hash type to use (default: sha512)
+    \\<path>                                              Root directory for checksum generation
+    \\--hash-type <hash_type>                                  Which hash type to use (default: sha512)
     \\-i, --include-unchanged                            Include unchanged files in output
     \\-s, --skip-unchanged                               Skip files with matching modification time
     \\--periodic-write-interval-seconds <u64>            Flush to disk every N seconds
     \\--discover-hash-files-depth <u32>                  Maximum directory depth for discovering checksum files
-    \\--keep-deleted                                     Keep entries for deleted files
-    \\--hash-allow <str>...                              Glob patterns for allowed checksum sources
-    \\--hash-block <str>...                              Glob patterns for blocked checksum sources
-    \\--all-allow <str>...                               Glob patterns for allowed files in discovery
-    \\--all-block <str>...                               Glob patterns for blocked files in discovery
+    \\--keep-deleted                                     Keep entries for deleted files (default: false)
+    \\--hash-allow <glob>...                              Glob patterns for allowed checksum sources. If empty, all checksum files are included by default.
+    \\--hash-block <glob>...                              Glob patterns for blocked checksum sources. Block patterns always take precedence over allow patterns.
+    \\--all-allow <glob>...                               Glob patterns for allowed files in discovery. If empty, all files are included by default.
+    \\--all-block <glob>...                               Glob patterns for blocked files in discovery. Block patterns always take precedence over allow patterns.
     \\
 );
 
 const build_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
-    \\<str>                                              Root directory for checksum file discovery
+    \\<path>                                              Root directory for checksum file discovery
     \\--discover-hash-files-depth <u32>                  Maximum directory depth for discovering checksum files
     \\--keep-deleted                                     Keep entries for deleted files
-    \\--hash-allow <str>...                              Glob patterns for allowed checksum sources
-    \\--hash-block <str>...                              Glob patterns for blocked checksum sources
+    \\--hash-allow <glob>...                              Glob patterns for allowed checksum sources. If empty, all checksum files are included by default.
+    \\--hash-block <glob>...                              Glob patterns for blocked checksum sources. Block patterns always take precedence over allow patterns.
     \\
 );
 
 const move_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
-    \\<str>                                              Source checksum file path
-    \\<str>                                              Destination path
+    \\<path>                                              Source checksum file path
+    \\<path>                                              Destination path
     \\
 );
 
 const verify_file_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
-    \\<str>                                              Path to the checksum file to verify
-    \\--verify-allow <str>...                            Glob patterns for allowed files in verify
-    \\--verify-block <str>...                            Glob patterns for blocked files in verify
+    \\<path>                                              Path to the checksum file to verify
+    \\--verify-allow <glob>...                            Glob patterns for allowed files in verify. If empty, all files are included by default.
+    \\--verify-block <glob>...                            Glob patterns for blocked files in verify. Block patterns always take precedence over allow patterns.
     \\
 );
 
 const verify_root_params = clap.parseParamsComptime(
     \\-h, --help  Display this help and exit.
-    \\<str>                                              Root directory for checksum file discovery
+    \\<path>                                              Root directory for checksum file discovery
     \\--discover-hash-files-depth <u32>                  Maximum directory depth for discovering checksum files
     \\--keep-deleted                                     Keep entries for deleted files
-    \\--hash-allow <str>...                              Glob patterns for allowed checksum sources
-    \\--hash-block <str>...                              Glob patterns for blocked checksum sources
-    \\--verify-allow <str>...                            Glob patterns for allowed files in verify
-    \\--verify-block <str>...                            Glob patterns for blocked files in verify
+    \\--hash-allow <glob>...                              Glob patterns for allowed checksum sources. If empty, all checksum files are included by default.
+    \\--hash-block <glob>...                              Glob patterns for blocked checksum sources. Block patterns always take precedence over allow patterns.
+    \\--verify-allow <glob>...                            Glob patterns for allowed files in verify. If empty, all files are included by default.
+    \\--verify-block <glob>...                            Glob patterns for blocked files in verify. Block patterns always take precedence over allow patterns.
     \\
 );
 
@@ -162,7 +171,7 @@ pub fn main(init: std.process.Init) !void {
         .build => try buildOrMissing(init.io, init.gpa, &iter, .build),
         .missing => try buildOrMissing(init.io, init.gpa, &iter, .missing),
         .fill => try incrementalOrFill(init.io, init.gpa, &iter, .fill),
-        .@"move" => try moveCmd(init.io, init.gpa, &iter),
+        .move => try moveCmd(init.io, init.gpa, &iter),
         .verify => try verifyMain(init.io, init.gpa, &iter),
     }
 }
@@ -170,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
 fn incrementalOrFill(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterator, comptime command: enum { incremental, fill }) !void {
     _ = command;
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &incremental_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &incremental_params, &main_parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -188,7 +197,7 @@ fn incrementalOrFill(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args
 fn buildOrMissing(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterator, comptime command: enum { build, missing }) !void {
     _ = command;
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &build_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &build_params, &main_parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -205,7 +214,7 @@ fn buildOrMissing(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.It
 
 fn moveCmd(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterator) !void {
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &move_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &move_params, &main_parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -247,7 +256,7 @@ fn verifyMain(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterat
 
 fn verifyFile(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterator) !void {
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &verify_file_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &verify_file_params, &main_parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -264,7 +273,7 @@ fn verifyFile(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterat
 
 fn verifyRoot(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterator) !void {
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &verify_root_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &verify_root_params, &main_parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {

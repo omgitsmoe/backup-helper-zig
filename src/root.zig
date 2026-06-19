@@ -6,6 +6,7 @@ const checksum_helper = @import("checksum_helper.zig");
 pub const ChecksumHelper = checksum_helper.ChecksumHelper;
 pub const ChecksumHelperOptions = checksum_helper.Options;
 pub const ChecksumMissingResult = checksum_helper.CheckMissingResult;
+pub const HashType = @import("hash.zig").HashType;
 
 // TODO: testing robustness pass (ordering etc.)
 //       also windows compat of tests
