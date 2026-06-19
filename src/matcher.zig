@@ -83,7 +83,7 @@ pub const PathMatcherBuilder = struct {
     pub fn allow(self: *@This(), glob_pattern: []const u8) !void {
         const compiled = try zlob.compilePattern(
             self.allocator,
-            glob_pattern,
+            trimTrailingSeparator(glob_pattern),
             ZlobFlags,
         );
         try self.allow_list.append(self.allocator, compiled);
@@ -92,10 +92,20 @@ pub const PathMatcherBuilder = struct {
     pub fn block(self: *@This(), glob_pattern: []const u8) !void {
         const compiled = try zlob.compilePattern(
             self.allocator,
-            glob_pattern,
+            trimTrailingSeparator(glob_pattern),
             ZlobFlags,
         );
         try self.block_list.append(self.allocator, compiled);
+    }
+
+    // zlob doesn't match pattern foo/bar/ on directory foo/bar,
+    // which would be confusing, so trim here
+    fn trimTrailingSeparator(pattern: []const u8) []const u8 {
+        const separators = if (comptime std.fs.path.sep == '\\')
+            &[_]u8{ '/', '\\' }
+        else
+            &[_]u8{'/'};
+        return std.mem.trimEnd(u8, pattern, separators);
     }
 };
 
@@ -119,6 +129,33 @@ test PathMatcher {
 
     try testing.expect(matcher.isMatch("foo/xer/abc.zig"));
     try testing.expect(matcher.isMatch("xer/file.txt"));
+}
+
+test "trailing slash in patterns is trimmed" {
+    var builder = PathMatcherBuilder.init(testing.allocator);
+    try builder.block("foo/bar/");
+    try builder.allow("**/*.txt");
+
+    var matcher = try builder.build();
+    defer matcher.deinit(testing.allocator);
+
+    // isBlocked matches directory path (prevents walker entry)
+    try testing.expect(matcher.isBlocked("foo/bar"));
+    // isMatch still works for files at root
+    try testing.expect(matcher.isMatch("a.txt"));
+    try testing.expect(!matcher.isMatch("other.bin"));
+
+    // Same result without trailing slash
+    var builder2 = PathMatcherBuilder.init(testing.allocator);
+    try builder2.block("foo/bar");
+    try builder2.allow("**/*.txt");
+
+    var matcher2 = try builder2.build();
+    defer matcher2.deinit(testing.allocator);
+
+    try testing.expect(matcher2.isBlocked("foo/bar"));
+    try testing.expect(matcher2.isMatch("a.txt"));
+    try testing.expect(!matcher2.isMatch("other.bin"));
 }
 
 test "empty matcher matches everything" {

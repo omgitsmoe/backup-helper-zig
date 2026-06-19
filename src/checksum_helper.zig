@@ -824,7 +824,7 @@ test "fillMissing" {
             ,
             .build_matcher = &struct {
                 fn build(builder: *PathMatcherBuilder) anyerror!void {
-                    try builder.block("foo/bar");
+                    try builder.block("foo/bar/");
                     try builder.allow("**/*.md5");
                     try builder.allow("**/*.bin");
                     try builder.allow("**/*.foo");
@@ -863,7 +863,7 @@ test "fillMissing" {
             ,
             .build_matcher = &struct {
                 fn build(builder: *PathMatcherBuilder) anyerror!void {
-                    try builder.block("foo/bar");
+                    try builder.block("foo/bar/");
                     try builder.allow("**/*.md5");
                     try builder.allow("**/*.bin");
                     try builder.allow("**/*.foo");
