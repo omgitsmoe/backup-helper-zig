@@ -107,11 +107,13 @@ pub const ChecksumHelper = struct {
             );
             break :blk abs;
         } else try allocator.dupe(u8, root);
+        defer allocator.free(use_root);
 
+        const normalized = try std_path.resolve(allocator, &.{use_root});
         return .{
             .io = io,
             .allocator = allocator,
-            .root = use_root,
+            .root = normalized,
             .store = PathStore.init(allocator, 64 * 1024),
             .options = options,
             .most_current = null,
@@ -156,6 +158,8 @@ pub const ChecksumHelper = struct {
             most_current,
             IncrementalOptions.from(self.options),
         );
+        defer inc.deinit();
+
         return inc.generate(progress, context);
     }
 
