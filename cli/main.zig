@@ -223,11 +223,14 @@ fn incrementalOrFill(
     defer reporter.deinit();
 
     var ch = try bh.ChecksumHelper.withOptions(io, gpa, root, opts);
+    defer ch.deinit();
 
-    const result = try switch (command) {
+    var result = try switch (command) {
         .incremental => ch.incremental(ProgressReporter.cbIncremental, &reporter),
         .fill => ch.fillMissing(ProgressReporter.cbIncremental, &reporter),
     };
+    defer result.deinit();
+
     try ch.writeCollection(result);
 }
 
