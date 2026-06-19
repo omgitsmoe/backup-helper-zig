@@ -7,7 +7,7 @@ const PathMatcher = @import("matcher.zig").PathMatcher;
 const prog = @import("progress.zig");
 const PathStore = @import("store.zig").PathStore;
 
-pub const PredicateFn = *const fn (context: *anyopaque, entry: Dir.Walker.Entry) bool;
+pub const PredicateFn = *const fn (context: *anyopaque, entry: Dir.Walker.Entry) prog.CallbackError!bool;
 
 /// NOTE: the memory `relativePath` that the PredicateFn receives will only
 ///       remain valid for the duration of the PredicateFn call.
@@ -16,7 +16,9 @@ pub const FilteredWalker = struct {
     walker: Dir.SelectiveWalker,
     max_depth: u32,
 
-    pub const Error = Dir.OpenError || Dir.StatFileError || std.mem.Allocator.Error;
+    pub const Error = Dir.OpenError || Dir.StatFileError ||
+        std.mem.Allocator.Error ||
+        prog.CallbackError;
     const Self = @This();
 
     pub const Status = enum {
@@ -76,7 +78,7 @@ pub const FilteredWalker = struct {
             //        - same drawback as hashing the link contents
 
             const include = if (self.predicateFn) |predicateFn|
-                predicateFn(userdata, entry)
+                try predicateFn(userdata, entry)
             else
                 true;
 
@@ -122,7 +124,7 @@ pub const MatcherWalker = struct {
         };
     }
 
-    fn pred(userdata: *anyopaque, entry: Dir.Walker.Entry) bool {
+    fn pred(userdata: *anyopaque, entry: Dir.Walker.Entry) prog.CallbackError!bool {
         const self: *const MatcherWalker = @ptrCast(@alignCast(userdata));
         return self.match(entry);
     }
@@ -397,7 +399,7 @@ test "FilteredWalker iterates all files" {
     );
 }
 
-fn testPredicate(_: *anyopaque, entry: Dir.Walker.Entry) bool {
+fn testPredicate(_: *anyopaque, entry: Dir.Walker.Entry) prog.CallbackError!bool {
     if (entry.kind == .directory) {
         return std.mem.startsWith(u8, entry.basename, "bar") or
             std.mem.startsWith(u8, entry.basename, "xer");

@@ -138,11 +138,11 @@ pub const Collection = struct {
         return result;
     }
 
-    pub fn root(self: *@This()) []const u8 {
+    pub fn root(self: @This()) []const u8 {
         return self.root_path;
     }
 
-    pub fn filename(self: *@This()) []const u8 {
+    pub fn filename(self: @This()) []const u8 {
         return self.name;
     }
 
@@ -257,7 +257,7 @@ pub const Collection = struct {
                 .size_total_bytes = size_total_bytes,
             };
 
-            try progress(&.{ .pre = pre }, context);
+            try progress(.{ .pre = pre }, context);
 
             const Ctx = struct {
                 progress: prog.VerifyProgressFn,
@@ -265,7 +265,7 @@ pub const Collection = struct {
 
                 fn callback(p: prog.HashProgress, c: *anyopaque) prog.CallbackError!void {
                     const s: *@This() = @ptrCast(@alignCast(c));
-                    try s.progress(&.{ .during = p }, s.context);
+                    try s.progress(.{ .during = p }, s.context);
                 }
             };
             var ctx = Ctx{ .context = context, .progress = progress };
@@ -283,7 +283,7 @@ pub const Collection = struct {
             pre.file_number_processed = file_number_processed;
 
             try progress(
-                &.{ .post = .{ .progress = pre, .result = result } },
+                .{ .post = .{ .progress = pre, .result = result } },
                 context,
             );
         }
@@ -544,8 +544,8 @@ test "Collection verify" {
         .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
     });
 
-    const expected_callbacks = &[_]*const prog.VerifyProgress{
-        &.{
+    const expected_callbacks = &[_]prog.VerifyProgress{
+        .{
             .pre = .{
                 .file_number_processed = 0,
                 .file_number_total = 3,
@@ -555,7 +555,7 @@ test "Collection verify" {
                 .tree_root = tmp.absolute_path,
             },
         },
-        &.{
+        .{
             .post = .{
                 .result = .mismatch_size,
                 .progress = .{
@@ -568,7 +568,7 @@ test "Collection verify" {
                 },
             },
         },
-        &.{
+        .{
             .pre = .{
                 .file_number_processed = 1,
                 .file_number_total = 3,
@@ -578,8 +578,8 @@ test "Collection verify" {
                 .tree_root = tmp.absolute_path,
             },
         },
-        &.{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
-        &.{
+        .{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
+        .{
             .post = .{
                 .result = .ok,
                 .progress = .{
@@ -592,7 +592,7 @@ test "Collection verify" {
                 },
             },
         },
-        &.{
+        .{
             .pre = .{
                 .file_number_processed = 2,
                 .file_number_total = 3,
@@ -602,8 +602,8 @@ test "Collection verify" {
                 .tree_root = tmp.absolute_path,
             },
         },
-        &.{ .during = .{ .bytes_read = 11, .bytes_total = 11 } },
-        &.{
+        .{ .during = .{ .bytes_read = 11, .bytes_total = 11 } },
+        .{
             .post = .{
                 .result = .mismatch_corrupted,
                 .progress = .{
@@ -618,7 +618,7 @@ test "Collection verify" {
         },
     };
 
-    const CaptureType = helpers.CallbackCapture(*const prog.VerifyProgress);
+    const CaptureType = helpers.CallbackCapture(prog.VerifyProgress);
     var capture: CaptureType = .init(testing.allocator);
     defer capture.deinit();
 
@@ -630,7 +630,7 @@ test "Collection verify" {
     );
 
     try helpers.expectEqualSlicesDeep(
-        *const prog.VerifyProgress,
+        prog.VerifyProgress,
         expected_callbacks,
         capture.captures.items,
     );
@@ -710,8 +710,8 @@ test "Collection verify respects include" {
         .hash_bytes = &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
     });
 
-    const expected_callbacks = &[_]*const prog.VerifyProgress{
-        &.{
+    const expected_callbacks = &[_]prog.VerifyProgress{
+        .{
             .pre = .{
                 .file_number_processed = 1,
                 .file_number_total = 3,
@@ -721,8 +721,8 @@ test "Collection verify respects include" {
                 .tree_root = tmp.absolute_path,
             },
         },
-        &.{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
-        &.{
+        .{ .during = .{ .bytes_read = 12, .bytes_total = 12 } },
+        .{
             .post = .{
                 .result = .ok,
                 .progress = .{
@@ -743,7 +743,7 @@ test "Collection verify respects include" {
         }
     }.incl;
 
-    const CaptureType = helpers.CallbackCapture(*const prog.VerifyProgress);
+    const CaptureType = helpers.CallbackCapture(prog.VerifyProgress);
     var capture: CaptureType = .init(testing.allocator);
     defer capture.deinit();
 
@@ -755,7 +755,7 @@ test "Collection verify respects include" {
     );
 
     try helpers.expectEqualSlicesDeep(
-        *const prog.VerifyProgress,
+        prog.VerifyProgress,
         expected_callbacks,
         capture.captures.items,
     );

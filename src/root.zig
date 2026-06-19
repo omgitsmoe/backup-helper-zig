@@ -54,3 +54,7 @@ test "most_current" {
 test "incremental" {
     _ = @import("incremental.zig");
 }
+
+test "checksum_helper" {
+    _ = @import("checksum_helper.zig");
+}

@@ -9,11 +9,22 @@ const defaultHashFileName = @import("checksum_helper.zig").defaultHashFileName;
 const discover = @import("discover.zig");
 const prog = @import("progress.zig");
 
+const ChecksumHelperOptions = @import("checksum_helper.zig").Options;
+
 pub const Options = struct {
     root: []const u8,
     discover_hash_files_depth: ?u32,
     most_current_filter_deleted: bool,
     hash_files_matcher: PathMatcher,
+
+    pub fn from(root: []const u8, options: ChecksumHelperOptions) Options {
+        return .{
+            .root = root,
+            .discover_hash_files_depth = options.discover_hash_files_depth,
+            .most_current_filter_deleted = options.most_current_filter_deleted,
+            .hash_files_matcher = options.hash_files_matcher,
+        };
+    }
 };
 
 pub fn buildMostCurrent(

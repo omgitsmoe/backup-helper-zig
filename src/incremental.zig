@@ -10,6 +10,7 @@ const PathMatcher = @import("matcher.zig").PathMatcher;
 const HashType = @import("hash.zig").HashType;
 const Serializer = @import("serializer.zig").Serializer;
 const File = @import("file.zig").File;
+const ChecksumHelperOptions = @import("checksum_helper.zig").Options;
 const discoverFiles = @import("discover.zig").discoverFiles;
 const defaultHashFileName = @import("checksum_helper.zig").defaultHashFileName;
 
@@ -34,6 +35,16 @@ pub const Options = struct {
     /// in an incremental hash file, which files are ignored when checking
     /// for files that don't have checksums in `check_missing`, etc.
     all_files_matcher: PathMatcher,
+
+    pub fn from(options: ChecksumHelperOptions) Options {
+        return .{
+            .hash_type = options.hash_type,
+            .include_unchanged_files = options.incremental_include_unchanged_files,
+            .skip_unchanged = options.incremental_skip_unchanged,
+            .periodic_write_interval = options.incremental_periodic_write_interval,
+            .all_files_matcher = options.all_files_matcher,
+        };
+    }
 };
 
 pub const Incremental = struct {
@@ -88,22 +99,6 @@ pub const Incremental = struct {
         }, progress, context);
         return self.checksumFiles(progress, context);
     }
-
-    const MapCallback = struct {
-        inner: *Incremental,
-        progress: ?prog.IncrementalProgressFn,
-        context: *anyopaque,
-
-        pub fn cb(p: prog.HashProgress, context: *anyopaque) prog.CallbackError!void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-
-            if (self.progress) |progress_fn| {
-                try progress_fn(.{
-                    .read = .{ .read = p.bytes_read, .total = p.bytes_total },
-                }, self.context);
-            }
-        }
-    };
 
     fn checksumFiles(
         self: *Incremental,
@@ -194,8 +189,7 @@ pub const Incremental = struct {
                 }
             }
 
-            var mapper = MapCallback{
-                .inner = self,
+            var mapper = prog.IncrementalProgressMapper{
                 .progress = progress,
                 .context = context,
             };
@@ -203,7 +197,7 @@ pub const Incremental = struct {
                 self.io,
                 collection_alloc,
                 open_file,
-                MapCallback.cb,
+                prog.IncrementalProgressMapper.cbHashProgress,
                 &mapper,
             );
 
@@ -263,8 +257,7 @@ pub const Incremental = struct {
         context: *anyopaque,
     ) Error!bool {
         const is_match = if (on_disk.hash_type != previous.hash_type) blk: {
-            var mapper = MapCallback{
-                .inner = self,
+            var mapper = prog.IncrementalProgressMapper{
                 .progress = progress,
                 .context = context,
             };
@@ -272,7 +265,7 @@ pub const Incremental = struct {
                 self.io,
                 self.allocator,
                 open_file,
-                MapCallback.cb,
+                prog.IncrementalProgressMapper.cbHashProgress,
                 &mapper,
             );
             defer self.allocator.free(on_disk_hash);

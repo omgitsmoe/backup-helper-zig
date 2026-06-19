@@ -20,12 +20,12 @@ pub const IncrementalProgressFn = *const fn (
 ) CallbackError!void;
 
 pub const VerifyProgressFn = *const fn (
-    progress: *const VerifyProgress,
+    progress: VerifyProgress,
     context: *anyopaque,
 ) CallbackError!void;
 
 pub const VerifyRootProgressFn = *const fn (
-    progress: *const VerifyProgress,
+    progress: VerifyRootProgress,
     context: *anyopaque,
 ) CallbackError!void;
 
@@ -225,7 +225,7 @@ pub const IncrementalProgress = union(enum) {
     }
 };
 
-const IncrementalProgressMapper = struct {
+pub const IncrementalProgressMapper = struct {
     progress: ?IncrementalProgressFn,
     context: *anyopaque,
 
@@ -233,7 +233,17 @@ const IncrementalProgressMapper = struct {
         const self: *@This() = @ptrCast(@alignCast(ctx));
 
         if (self.progress) |progress_fn| {
-            try progress_fn(p, self.context);
+            try progress_fn(.{ .build_most_current = p }, self.context);
+        }
+    }
+
+    pub fn cbHashProgress(p: HashProgress, context: *anyopaque) CallbackError!void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+
+        if (self.progress) |progress_fn| {
+            try progress_fn(.{
+                .read = .{ .read = p.bytes_read, .total = p.bytes_total },
+            }, self.context);
         }
     }
 };
@@ -302,23 +312,19 @@ pub const VerifyRootProgress = union(enum) {
     verify: VerifyProgress,
 };
 
-const VerifyRootMapper = struct {
-    progress: ?VerifyRootProgressFn,
+pub const VerifyRootMapper = struct {
+    progress: VerifyRootProgressFn,
     context: *anyopaque,
 
     pub fn cbMostCurrent(p: MostCurrentProgress, ctx: *anyopaque) CallbackError!void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
 
-        if (self.progress) |progress_fn| {
-            try progress_fn(p, self.context);
-        }
+        try self.progress(.{ .most_current = p }, self.context);
     }
 
     pub fn cbVerify(p: VerifyProgress, ctx: *anyopaque) CallbackError!void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
 
-        if (self.progress) |progress_fn| {
-            try progress_fn(p, self.context);
-        }
+        try self.progress(.{ .verify = p }, self.context);
     }
 };

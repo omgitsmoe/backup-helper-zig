@@ -50,6 +50,45 @@ pub const File = struct {
         MissingHash,
     } || prog.CallbackError || Io.File.OpenError || Io.File.StatError;
 
+    pub fn from_disk(
+        io: Io,
+        allocator: std.mem.Allocator,
+        file_path: []const u8,
+        hash_type: hash.HashType,
+        progress: ?prog.HashProgressFn,
+        context: *anyopaque,
+    ) Error!File {
+        const open_file = try Io.Dir.openFileAbsolute(
+            io,
+            file_path,
+            .{ .allow_directory = false },
+        );
+        defer open_file.close(io);
+
+        var on_disk = File{
+            .path = file_path,
+            .mtime = null,
+            .size = null,
+            .hash_type = hash_type,
+            .hash_bytes = &.{},
+        };
+
+        const st = try open_file.stat(io);
+        on_disk.mtime = st.mtime;
+        on_disk.size = st.size;
+
+        const hash_bytes = try on_disk.hash_from_disk(
+            io,
+            allocator,
+            open_file,
+            progress,
+            context,
+        );
+        on_disk.hash_bytes = hash_bytes;
+
+        return on_disk;
+    }
+
     pub fn metadata_from_disk(self: *@This(), io: Io) Error!void {
         const file = try Io.Dir.openFileAbsolute(
             io,
