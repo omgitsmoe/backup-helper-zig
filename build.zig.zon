@@ -36,6 +36,10 @@
             .url = "https://github.com/dmtrKovalenko/zlob/archive/refs/tags/v1.5.0.tar.gz",
             .hash = "zlob-1.5.0-zzE2lW6gBgAj7mSFzSv6JxBTrsVycLjfIELv8vZCKyj7",
         },
+        .clap = .{
+            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.12.0.tar.gz",
+            .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
+        },
     },
     .paths = .{
         "build.zig",

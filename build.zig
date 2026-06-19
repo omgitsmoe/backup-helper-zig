@@ -85,8 +85,12 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    // TODO when building globs from cli
-    // exe.root_module.addImport("glob", glob_dep.module("glob"));
+
+    // for building globs from cli
+    exe.root_module.addImport("zlob", zlob_dep.module("zlob"));
+
+    const clap = b.dependency("clap", .{});
+    exe.root_module.addImport("clap", clap.module("clap"));
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
