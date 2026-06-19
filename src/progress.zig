@@ -316,6 +316,9 @@ pub const VerifyRootMapper = struct {
     progress: VerifyRootProgressFn,
     context: *anyopaque,
 
+    include: ?*const fn ([]const u8, *anyopaque) bool = null,
+    include_context: *anyopaque = undefined,
+
     pub fn cbMostCurrent(p: MostCurrentProgress, ctx: *anyopaque) CallbackError!void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
 
@@ -326,5 +329,11 @@ pub const VerifyRootMapper = struct {
         const self: *@This() = @ptrCast(@alignCast(ctx));
 
         try self.progress(.{ .verify = p }, self.context);
+    }
+
+    pub fn cbInclude(relative_path: []const u8, ctx: *anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        const include = self.include orelse return true;
+        return include(relative_path, self.include_context);
     }
 };

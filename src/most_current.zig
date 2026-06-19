@@ -61,12 +61,14 @@ pub fn buildMostCurrent(
     defer allocator.free(name);
 
     var most_current = try Collection.init(allocator, options.root, name);
+    errdefer most_current.deinit();
 
     for (discover_result.hash_files) |hash_file_path| {
         if (progress) |progress_fn| {
             try progress_fn(.{ .merge_hash_file = hash_file_path }, context);
         }
 
+        // TODO catch error and inform via callback instead of aborting
         var hash_file = try Collection.fromDisk(io, allocator, store, hash_file_path);
         defer hash_file.deinit();
         // NOTE: merge will always keep hash_file's entries, since

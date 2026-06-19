@@ -207,7 +207,7 @@ pub const Collection = struct {
 
     pub const IncludeFn = *const fn (relative_path: []const u8, context: *anyopaque) bool;
 
-    pub fn verifyImpl(
+    fn verifyImpl(
         self: *const @This(),
         comptime IteratorType: type,
         iter: *IteratorType,

@@ -3,7 +3,12 @@ const testing = std.testing;
 
 const zlob = @import("zlob");
 
-const ZlobFlags = zlob.ZlobFlags.recommended();
+const ZlobFlags = blk: {
+    var r = zlob.ZlobFlags.recommended();
+    // allow */** to match hidden files/dirs
+    r.period = true;
+    break :blk r;
+};
 
 pub const PathMatcher = struct {
     allow: []zlob.CompiledPattern,

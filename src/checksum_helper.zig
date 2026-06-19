@@ -265,7 +265,9 @@ pub const ChecksumHelper = struct {
         }
 
         var missing_files = std.ArrayList([]const u8).empty;
+        defer missing_files.deinit(self.allocator);
         var missing_directories = std.ArrayList([]const u8).empty;
+        defer missing_directories.deinit(self.allocator);
         var store = PathStore.init(self.allocator, Io.Dir.max_path_bytes);
         errdefer store.deinit();
 
@@ -434,6 +436,8 @@ pub const ChecksumHelper = struct {
             collection.root(),
             collection.filename(),
         });
+        defer self.allocator.free(path);
+
         const file = try Io.Dir.cwd().createFile(self.io, path, .{});
         var buf: [64 * 1024]u8 = undefined;
         var w = file.writer(self.io, &buf);
@@ -488,6 +492,8 @@ pub const ChecksumHelper = struct {
         var mapper = prog.VerifyRootMapper{
             .progress = progress,
             .context = context,
+            .include = include,
+            .include_context = context,
         };
 
         const most_current = try self.mostCurrent(
@@ -497,7 +503,7 @@ pub const ChecksumHelper = struct {
 
         try most_current.verify(
             self.io,
-            include,
+            prog.VerifyRootMapper.cbInclude,
             &prog.VerifyRootMapper.cbVerify,
             &mapper,
         );
@@ -514,6 +520,12 @@ pub const CheckMissingResult = struct {
     files: [][]const u8,
     /// Store holding all paths that `directories` and `files` point to.
     store: PathStore,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.directories);
+        allocator.free(self.files);
+        self.store.deinit();
+    }
 };
 
 pub fn defaultHashFileName(
@@ -530,15 +542,26 @@ pub fn defaultHashFileName(
         dirname;
 
     const now = Io.Timestamp.now(io, .real);
+    const secs: u64 = @intCast(now.toSeconds());
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
+    const epoch_day = epoch_seconds.getEpochDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
 
-    // YYYY-MM-DDTHHMMSS
-    //                  ^ 18
-    const time_string_bytes_max = 20;
-    var buf: [Io.Dir.max_name_bytes + time_string_bytes_max]u8 = undefined;
+    var buf: [Io.Dir.max_name_bytes]u8 = undefined;
     var writer = Io.Writer.fixed(&buf);
 
-    try writer.print("{s}_{s}", .{ base, infix });
-    try now.formatNumber(&writer, .{});
+    try writer.print("{s}_{s}{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}{d:0>2}{d:0>2}.cshd", .{
+        base,
+        infix,
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+        day_seconds.getSecondsIntoMinute(),
+    });
 
     const dupe = allocator.dupe(u8, writer.buffered());
     return dupe;
