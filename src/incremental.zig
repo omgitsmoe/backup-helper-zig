@@ -231,6 +231,8 @@ pub const Incremental = struct {
                         last_flush = now;
                     }
                 }
+            } else {
+                on_disk.deinit(collection_alloc);
             }
         }
 
