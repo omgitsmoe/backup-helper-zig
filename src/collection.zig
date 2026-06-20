@@ -53,6 +53,7 @@ pub const Collection = struct {
         MissingHash,
         MissingExtension,
         MergeRootsIncompatible,
+        HashFunctionFailed,
     } || prog.CallbackError || hash.HashType.Error;
 
     /// Collection does not take ownership of `path`

@@ -48,6 +48,7 @@ pub const File = struct {
 
     const Error = error{
         MissingHash,
+        HashFunctionFailed,
     } || prog.CallbackError || Io.File.OpenError || Io.File.StatError;
 
     pub fn from_disk(
