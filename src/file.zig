@@ -81,6 +81,7 @@ pub const File = struct {
             io,
             allocator,
             open_file,
+            st.size,
             progress,
             context,
         );
@@ -143,11 +144,13 @@ pub const File = struct {
             .{ .allow_directory = false },
         );
         defer file.close(io);
+        const st = try file.stat(io);
 
         const hash_bytes = try self.hash_from_disk(
             io,
             allocator,
             file,
+            st.size,
             progress,
             context,
         );
@@ -159,12 +162,12 @@ pub const File = struct {
         io: Io,
         allocator: std.mem.Allocator,
         file: Io.File,
+        file_size: u64,
         progress: ?prog.HashProgressFn,
         context: *anyopaque,
     ) Error![]u8 {
-        const stat = try file.stat(io);
         var cb_context = hashFileCbContext{
-            .bytes_total = stat.size,
+            .bytes_total = file_size,
             .progress = progress,
             .context = context,
         };
@@ -242,6 +245,7 @@ pub const File = struct {
             io,
             allocator,
             file,
+            stat.size,
             progress,
             context,
         );

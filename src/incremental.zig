@@ -197,6 +197,7 @@ pub const Incremental = struct {
                 self.io,
                 collection_alloc,
                 open_file,
+                st.size,
                 prog.IncrementalProgressMapper.cbHashProgress,
                 &mapper,
             );
@@ -267,6 +268,7 @@ pub const Incremental = struct {
                 self.io,
                 self.allocator,
                 open_file,
+                on_disk.size orelse 0,
                 prog.IncrementalProgressMapper.cbHashProgress,
                 &mapper,
             );
