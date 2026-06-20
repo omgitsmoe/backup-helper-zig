@@ -327,11 +327,16 @@ pub const Collection = struct {
         }
     }
 
+    pub const MergePolicy = enum {
+        borrow_path,
+        clone_path,
+    };
+
     /// Merges all entries in `other` into `self`. If there are conflicts:
     /// Keep the data from the __collection__ with the more recent mtime.
     /// An mtime of null is always considered older.
     /// If both mtimes are null then our entries are preferred.
-    pub fn merge(self: *@This(), other: @This()) Error!void {
+    pub fn merge(self: *@This(), other: @This(), policy: MergePolicy) Error!void {
         try self.ensureMergeRootsAreCompatible(other);
 
         const keep_ours = if (self.mtime) |our_mtime| blk: {
@@ -353,7 +358,8 @@ pub const Collection = struct {
                 continue;
             }
 
-            const cloned = try entry.value_ptr.clone(alloc);
+            const clone_path = if (policy == .clone_path) true else false;
+            const cloned = try entry.value_ptr.clone(alloc, clone_path);
             try self.put(cloned);
         }
     }
@@ -1287,7 +1293,7 @@ test "Collection merge" {
             tt.expected.deinit();
         }
 
-        const actual_err = tt.self.merge(tt.other);
+        const actual_err = tt.self.merge(tt.other, .clone_path);
 
         if (tt.expected_error) |err| {
             try testing.expectError(err, actual_err);

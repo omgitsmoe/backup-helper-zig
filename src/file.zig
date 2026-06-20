@@ -187,9 +187,9 @@ pub const File = struct {
         }
     }
 
-    pub fn clone(self: @This(), allocator: std.mem.Allocator) std.mem.Allocator.Error!@This() {
+    pub fn clone(self: @This(), allocator: std.mem.Allocator, clone_path: bool) std.mem.Allocator.Error!@This() {
         return .{
-            .path = try allocator.dupe(u8, self.path),
+            .path = if (clone_path) try allocator.dupe(u8, self.path) else self.path,
             .mtime = self.mtime,
             .size = self.size,
             .hash_type = self.hash_type,
@@ -597,7 +597,7 @@ test "verify" {
     }
 }
 
-test "clone" {
+test "clone clone_path=true" {
     const file = File{
         .path = "foo",
         .mtime = Io.Timestamp.zero,
@@ -606,13 +606,33 @@ test "clone" {
         .hash_bytes = &[_]u8{ 0xbe, 0xef },
     };
 
-    const cloned = try file.clone(testing.allocator);
+    const cloned = try file.clone(testing.allocator, true);
     defer {
         testing.allocator.free(cloned.path);
         testing.allocator.free(cloned.hash_bytes);
     }
 
     try testing.expect(file.path.ptr != cloned.path.ptr);
+    try testing.expect(file.hash_bytes.ptr != cloned.hash_bytes.ptr);
+    try testing.expectEqualStrings(file.path, cloned.path);
+    try testing.expectEqualSlices(u8, file.hash_bytes, cloned.hash_bytes);
+}
+
+test "clone clone_path=false" {
+    const file = File{
+        .path = "foo",
+        .mtime = Io.Timestamp.zero,
+        .size = 1337,
+        .hash_type = .md5,
+        .hash_bytes = &[_]u8{ 0xbe, 0xef },
+    };
+
+    const cloned = try file.clone(testing.allocator, false);
+    defer {
+        testing.allocator.free(cloned.hash_bytes);
+    }
+
+    try testing.expect(file.path.ptr == cloned.path.ptr);
     try testing.expect(file.hash_bytes.ptr != cloned.hash_bytes.ptr);
     try testing.expectEqualStrings(file.path, cloned.path);
     try testing.expectEqualSlices(u8, file.hash_bytes, cloned.hash_bytes);

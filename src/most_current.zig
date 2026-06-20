@@ -73,7 +73,7 @@ pub fn buildMostCurrent(
         defer hash_file.deinit();
         // NOTE: merge will always keep hash_file's entries, since
         //       most_current.mtime is null
-        try most_current.merge(hash_file);
+        try most_current.merge(hash_file, .borrow_path);
     }
 
     if (options.most_current_filter_deleted) {
