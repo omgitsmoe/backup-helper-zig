@@ -77,7 +77,7 @@ pub const Collection = struct {
             .root_path = try alloc.dupe(u8, normalized),
             .name = try alloc.dupe(u8, name),
             .arena = arena,
-            .path_to_file = .init(alloc),
+            .path_to_file = .init(arena.child_allocator),
             .mtime = null,
         };
     }
