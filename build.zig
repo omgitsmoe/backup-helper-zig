@@ -41,23 +41,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const use_openssl = b.option(bool, "use-openssl", "Use OpenSSL libcrypto for SIMD-accelerated SHA-512") orelse false;
-
-    const write_opts = b.addWriteFiles();
-    const build_opts_zig = write_opts.add("build_options.zig", b.fmt(
-        \\pub const use_openssl = {};
-        \\
-    , .{@as(bool, use_openssl)}));
-    const options_module = b.createModule(.{
-        .root_source_file = build_opts_zig,
-        .target = target,
-    });
-    mod.addImport("build_options", options_module);
-
-    if (use_openssl) {
-        mod.linkSystemLibrary("crypto", .{});
-    }
-
     const zlob_dep = b.dependency("zlob", .{ .target = target, .optimize = optimize });
     mod.addImport("zlob", zlob_dep.module("zlob"));
 
@@ -105,14 +88,9 @@ pub fn build(b: *std.Build) void {
 
     // for building globs from cli
     exe.root_module.addImport("zlob", zlob_dep.module("zlob"));
-    exe.root_module.addImport("build_options", options_module);
 
     const clap = b.dependency("clap", .{});
     exe.root_module.addImport("clap", clap.module("clap"));
-
-    if (use_openssl) {
-        exe.root_module.linkSystemLibrary("crypto", .{});
-    }
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

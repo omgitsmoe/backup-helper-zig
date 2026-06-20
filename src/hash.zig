@@ -5,7 +5,6 @@ const Io = std.Io;
 const testing = std.testing;
 
 const prog = @import("progress.zig");
-const build_options = @import("build_options");
 
 pub const HashType = enum {
     md5,
@@ -56,10 +55,6 @@ pub fn hashFile(
     progress: ?*const fn (bytes_read: u64, context: *anyopaque) prog.CallbackError!void,
     context: *anyopaque,
 ) ![hash_type.toHasher().digest_length]u8 {
-    if (comptime hash_type == .sha512 and build_options.use_openssl) {
-        return hashFileOpensslSha512(io, file, progress, context);
-    }
-
     const hasher_type = hash_type.toHasher();
     var hasher = hasher_type.init(.{});
 
@@ -86,47 +81,6 @@ pub fn hashFile(
     return hashBytes;
 }
 
-fn hashFileOpensslSha512(
-    io: Io,
-    file: std.Io.File,
-    progress: ?*const fn (bytes_read: u64, context: *anyopaque) prog.CallbackError!void,
-    context: *anyopaque,
-) ![64]u8 {
-    const ctx = EVP_MD_CTX_new() orelse return error.OutOfMemory;
-    defer EVP_MD_CTX_free(ctx);
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha512(), null) != 1) return error.HashFunctionFailed;
-
-    var buf: [65536]u8 = undefined;
-    var r = file.reader(io, &buf);
-
-    var read_total: u64 = 0;
-    while (true) {
-        const chunk = r.interface.peekGreedy(1) catch break;
-        defer r.interface.toss(chunk.len);
-
-        if (EVP_DigestUpdate(ctx, chunk.ptr, chunk.len) != 1) return error.HashFunctionFailed;
-
-        read_total += chunk.len;
-        if (progress) |func| {
-            try func(read_total, context);
-        }
-    }
-
-    var hash_bytes: [64]u8 = undefined;
-    var hash_len: c_uint = 64;
-    if (EVP_DigestFinal_ex(ctx, &hash_bytes, &hash_len) != 1) return error.HashFunctionFailed;
-
-    return hash_bytes;
-}
-
-extern fn EVP_MD_CTX_new() callconv(.c) ?*anyopaque;
-extern fn EVP_MD_CTX_free(ctx: ?*anyopaque) callconv(.c) void;
-extern fn EVP_DigestInit_ex(ctx: *anyopaque, md: *anyopaque, impl: ?*anyopaque) callconv(.c) c_int;
-extern fn EVP_DigestUpdate(ctx: *anyopaque, data: [*]const u8, len: usize) callconv(.c) c_int;
-extern fn EVP_DigestFinal_ex(ctx: *anyopaque, md: [*]u8, len: *c_uint) callconv(.c) c_int;
-extern fn EVP_sha512() callconv(.c) *anyopaque;
-
 test hashFile {
     const helpers = @import("test_helpers.zig");
     const io = testing.io;
@@ -150,23 +104,12 @@ test hashFile {
         0xe3, 0xdf, 0x16, 0x3b, 0xe0, 0x8e, 0x6c, 0xa9,
     };
     hashTypeToExpected.put(.sha256, &expectedSha256Bytes);
-    const expectedSha512Bytes = [_]u8{
-        0xdb, 0x9b, 0x1c, 0xd3, 0x26, 0x2d, 0xee, 0x37,
-        0x75, 0x6a, 0x09, 0xb9, 0x06, 0x49, 0x73, 0x58,
-        0x98, 0x47, 0xca, 0xa8, 0xe5, 0x3d, 0x31, 0xa9,
-        0xd1, 0x42, 0xea, 0x27, 0x01, 0xb1, 0xb2, 0x8a,
-        0xbd, 0x97, 0x83, 0x8b, 0xb9, 0xa2, 0x70, 0x68,
-        0xba, 0x30, 0x5d, 0xc8, 0xd0, 0x4a, 0x45, 0xa1,
-        0xfc, 0xf0, 0x79, 0xde, 0x54, 0xd6, 0x07, 0x66,
-        0x69, 0x96, 0xb3, 0xcc, 0x54, 0xf6, 0xb6, 0x7c,
-    };
-    hashTypeToExpected.put(.sha512, &expectedSha512Bytes);
 
     const CbCapture = helpers.CallbackCapture(u64);
     var capture: CbCapture = .init(testing.allocator);
     defer capture.deinit();
 
-    inline for ([_]HashType{ .md5, .sha256, .sha512 }) |hash_type| {
+    inline for ([_]HashType{ .md5, .sha256 }) |hash_type| {
         const file = try tmp.dir.openFile(io, "file.txt", .{});
         defer file.close(io);
         const actualBytes = try hashFile(io, file, hash_type, &CbCapture.cb, &capture);
@@ -175,5 +118,5 @@ test hashFile {
         try testing.expectEqualSlices(u8, expectedBytes[0..], &actualBytes);
     }
 
-    try helpers.expectEqualSlicesDeep(u64, &[_]u64{ 12, 12, 12 }, capture.captures.items);
+    try helpers.expectEqualSlicesDeep(u64, &[_]u64{ 12, 12 }, capture.captures.items);
 }
