@@ -12,6 +12,8 @@ pub const PredicateFn = *const fn (context: *anyopaque, entry: Dir.Walker.Entry)
 /// NOTE: the memory `relativePath` that the PredicateFn receives will only
 ///       remain valid for the duration of the PredicateFn call.
 pub const FilteredWalker = struct {
+    // TODO callback-based predicate doesn't seem idiomatic,
+    //      prefer explicit iterator-approach, like Dir.SelectiveWalker.enter
     predicateFn: ?PredicateFn,
     walker: Dir.SelectiveWalker,
     max_depth: u32,

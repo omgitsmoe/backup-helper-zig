@@ -77,6 +77,21 @@ pub const Options = struct {
     }
 };
 
+// TODO find a better way to do progress reporting or
+//      include predicates
+//      the current callback-based approach doesn't seem idiomatic
+//      ("no hidden control flow"),
+//      prefer explicit iterator-approach, like Dir.SelectiveWalker.enter
+//      or emitting progress events as well
+//      option 1): small improvement use comptime-known callbacks
+//      `fn incremental(self: *ChecksumHelper, comptime context: anytype, comptime progress: fn (@TypeOf(context), IncrementalProgress) CallbackError!void) !Collection`
+//
+//      option 2): use an explicit event writer/sink
+//      fn incremental(self: *ChecksumHelper, progress_writer: ?*const EventWriter(IncrementalProgress)) !Collection
+//      kind of similar to a callback, but easier to use
+//
+//      option 3): full iterator-approach, which makes sense for file iteration,
+//      but unnecessarily complicates operations like file hashing etc.
 pub const ChecksumHelper = struct {
     io: Io,
     allocator: std.mem.Allocator,
