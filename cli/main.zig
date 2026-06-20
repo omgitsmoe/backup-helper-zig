@@ -167,7 +167,10 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const command = res.positionals[0] orelse return error.MissingCommand;
+    const command = res.positionals[0] orelse {
+        try printMainHelp(init.io);
+        return;
+    };
     switch (command) {
         .help => try printMainHelp(init.io),
         .incremental => try incrementalOrFill(init.io, init.gpa, &iter, .incremental),
@@ -333,7 +336,10 @@ fn verifyMain(io: std.Io, gpa: std.mem.Allocator, iter: *std.process.Args.Iterat
         return;
     }
 
-    const command = res.positionals[0] orelse return error.MissingCommand;
+    const command = res.positionals[0] orelse {
+        try printVerifyHelp(io);
+        return;
+    };
     switch (command) {
         .help => try printVerifyHelp(io),
         .file => try verifyFile(io, gpa, iter),
@@ -448,7 +454,6 @@ pub fn toMatcher(
     }
 
     for (block) |b| {
-        std.debug.print("skipping {s}\n", .{b});
         try builder.block(b);
     }
 
