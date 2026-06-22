@@ -44,7 +44,7 @@ pub const File = struct {
 
     // epsilon where a mtime timestamp will still be considered to
     // compare "equal"
-    const mtime_timestamp_epsilon_ms: u64 = 1;
+    const mtime_timestamp_epsilon_ns: u64 = 1_000;
 
     const Error = error{
         MissingHash,
@@ -104,10 +104,10 @@ pub const File = struct {
     }
 
     pub fn mtimeEqual(a: Io.Timestamp, b: Io.Timestamp) bool {
-        const diff_ms = @abs(
-            a.durationTo(b).toMilliseconds(),
+        const diff_ns = @abs(
+            a.durationTo(b).nanoseconds,
         );
-        if (diff_ms <= File.mtime_timestamp_epsilon_ms) {
+        if (diff_ns <= File.mtime_timestamp_epsilon_ns) {
             return true;
         }
 
